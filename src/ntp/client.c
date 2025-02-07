@@ -46,12 +46,12 @@
 // thread. If the NTP sync is less accurate than this value, the NTP server
 // thread will only be started after later NTP syncs have reached this accuracy.
 // Default: 0.5 (seconds)
-#define ACCURACY 0.5
+#define ACCURACY 2.0
 
 // Interval between successive NTP sync attempts in seconds in case of
 // not-yet-sufficient accuracy of the NTP sync
 // Default: 600 (seconds) = 10 minutes
-#define RETRY_INTERVAL 600
+#define RETRY_INTERVAL 300
 // Maximum number of NTP syncs to attempt before giving up
 #define RETRY_ATTEMPTS 5
 

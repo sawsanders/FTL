@@ -51,7 +51,7 @@
 // Interval between successive NTP sync attempts in seconds in case of
 // not-yet-sufficient accuracy of the NTP sync
 // Default: 600 (seconds) = 10 minutes
-#define RETRY_INTERVAL 30
+#define RETRY_INTERVAL 15
 // Maximum number of NTP syncs to attempt before giving up
 #define RETRY_ATTEMPTS 5
 

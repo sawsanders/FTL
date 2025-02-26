@@ -662,13 +662,13 @@ static void initConfig(struct config *conf)
 
 	// sub-struct dns.special_domains
 	conf->dns.specialDomains.mozillaCanary.k = "dns.specialDomains.mozillaCanary";
-	conf->dns.specialDomains.mozillaCanary.h = "Should Pi-hole always replies with NXDOMAIN to A and AAAA queries of use-application-dns.net to disable Firefox automatic DNS-over-HTTP? This is following the recommendation on https://support.mozilla.org/en-US/kb/configuring-networks-disable-dns-over-https";
+	conf->dns.specialDomains.mozillaCanary.h = "Should Pi-hole always reply with NXDOMAIN to A and AAAA queries of use-application-dns.net to disable Firefox automatic DNS-over-HTTP? This is following the recommendation on https://support.mozilla.org/en-US/kb/configuring-networks-disable-dns-over-https";
 	conf->dns.specialDomains.mozillaCanary.t = CONF_BOOL;
 	conf->dns.specialDomains.mozillaCanary.d.b = true;
 	conf->dns.specialDomains.mozillaCanary.c = validate_stub; // Only type-based checking
 
 	conf->dns.specialDomains.iCloudPrivateRelay.k = "dns.specialDomains.iCloudPrivateRelay";
-	conf->dns.specialDomains.iCloudPrivateRelay.h = "Should Pi-hole always replies with NXDOMAIN to A and AAAA queries of mask.icloud.com and mask-h2.icloud.com to disable Apple's iCloud Private Relay to prevent Apple devices from bypassing Pi-hole? This is following the recommendation on https://developer.apple.com/support/prepare-your-network-for-icloud-private-relay";
+	conf->dns.specialDomains.iCloudPrivateRelay.h = "Should Pi-hole always reply with NXDOMAIN to A and AAAA queries of mask.icloud.com and mask-h2.icloud.com to disable Apple's iCloud Private Relay to prevent Apple devices from bypassing Pi-hole? This is following the recommendation on https://developer.apple.com/support/prepare-your-network-for-icloud-private-relay";
 	conf->dns.specialDomains.iCloudPrivateRelay.t = CONF_BOOL;
 	conf->dns.specialDomains.iCloudPrivateRelay.d.b = true;
 	conf->dns.specialDomains.iCloudPrivateRelay.c = validate_stub; // Only type-based checking
@@ -1161,6 +1161,7 @@ static void initConfig(struct config *conf)
 	conf->webserver.api.maxHistory.k = "webserver.api.maxHistory";
 	conf->webserver.api.maxHistory.h = "How much history should be imported from the database and returned by the API [seconds]? (max 24*60*60 = 86400)";
 	conf->webserver.api.maxHistory.t = CONF_UINT;
+	conf->webserver.api.maxHistory.f = FLAG_RESTART_FTL; // Restart FTL to import more data in case of enlarging of this value
 	conf->webserver.api.maxHistory.d.ui = MAXLOGAGE*3600;
 	conf->webserver.api.maxHistory.c = validate_stub; // Only type-based checking
 

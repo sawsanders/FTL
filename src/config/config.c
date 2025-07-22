@@ -266,7 +266,6 @@ void duplicate_config(struct config *dst, struct config *src)
 			case CONF_UINT:
 			case CONF_UINT16:
 			case CONF_LONG:
-			case CONF_ULONG:
 			case CONF_DOUBLE:
 			case CONF_STRING:
 			case CONF_PASSWORD: // This is a pseudo-type, it is read-only and cannot be read
@@ -305,7 +304,6 @@ bool compare_config_item(const enum conf_type t, const union conf_value *val1, c
 		case CONF_UINT:
 		case CONF_UINT16:
 		case CONF_LONG:
-		case CONF_ULONG:
 		case CONF_DOUBLE:
 		case CONF_ENUM_PTR_TYPE:
 		case CONF_ENUM_BUSY_TYPE:
@@ -360,7 +358,6 @@ void free_config(struct config *conf)
 			case CONF_UINT:
 			case CONF_UINT16:
 			case CONF_LONG:
-			case CONF_ULONG:
 			case CONF_DOUBLE:
 			case CONF_STRING:
 			case CONF_PASSWORD: // This is a pseudo item, it cannot be freed
@@ -525,11 +522,11 @@ static void initConfig(struct config *conf)
 	conf->dns.dnssec.d.b = false;
 
 	conf->dns.interface.k = "dns.interface";
-	conf->dns.interface.h = "Interface to use for DNS (see also dnsmasq.listening.mode) and DHCP (if enabled)";
+	conf->dns.interface.h = "Interface to use for DNS (see also dnsmasq.listening.mode) and DHCP (if enabled). Leave empty for auto-detection.";
 	conf->dns.interface.a = cJSON_CreateStringReference("a valid interface name");
 	conf->dns.interface.t = CONF_STRING;
 	conf->dns.interface.f = FLAG_RESTART_FTL;
-	conf->dns.interface.d.s = (char*)"eth0";
+	conf->dns.interface.d.s = (char*)"";
 	conf->dns.interface.c = validate_stub; // Type-based checking + dnsmasq syntax checking
 	
 	conf->dns.hostRecord.k = "dns.hostRecord";
@@ -1814,7 +1811,8 @@ bool readFTLconf(struct config *conf, const bool rewrite)
 	// the most recent one and going back in time until we find a valid config
 	for(unsigned int i = 0; i < MAX_ROTATIONS; i++)
 	{
-		if(readFTLtoml(NULL, conf, NULL, rewrite, NULL, i))
+		toml_datum_t toml = { 0 };
+		if(readFTLtoml(NULL, conf, toml, rewrite, NULL, i, false))
 		{
 			// If successful, we write the config file back to disk
 			// to ensure that all options are present and comments
@@ -1917,8 +1915,6 @@ const char * __attribute__ ((const)) get_conf_type_str(const enum conf_type type
 			return "unsigned integer (16 bit)";
 		case CONF_LONG:
 			return "long integer";
-		case CONF_ULONG:
-			return "unsigned long integer";
 		case CONF_DOUBLE:
 			return "double";
 		case CONF_STRING: // fall through
@@ -1991,7 +1987,8 @@ void reread_config(void)
 
 	// Read TOML config file
 	bool restart = false;
-	if(readFTLtoml(&config, &conf_copy, NULL, true, &restart, 0))
+	toml_datum_t toml = { 0 };
+	if(readFTLtoml(&config, &conf_copy, toml, true, &restart, 0, false))
 	{
 		// Install new configuration
 		log_debug(DEBUG_CONFIG, "Loaded configuration is valid, installing it");

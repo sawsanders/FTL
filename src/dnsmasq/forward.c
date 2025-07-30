@@ -689,6 +689,7 @@ int fast_retry(time_t now)
   return ret;
 }
 
+#if defined(HAVE_IPSET) || defined(HAVE_NFTSET)
 static struct ipsets *domain_find_sets(struct ipsets *setlist, const char *domain) {
   /* Similar algorithm to search_servers. */
   struct ipsets *ipset_pos, *ret = NULL;
@@ -709,6 +710,7 @@ static struct ipsets *domain_find_sets(struct ipsets *setlist, const char *domai
 
   return ret;
 }
+#endif
 
 static size_t process_reply(struct dns_header *header, time_t now, struct server *server, size_t n, int check_rebind, 
 			    int no_cache, int cache_secure, int bogusanswer, int ad_reqd, int do_bit, int added_pheader, 
@@ -727,16 +729,19 @@ static size_t process_reply(struct dns_header *header, time_t now, struct server
   (void)ad_reqd;
   (void)do_bit;
  
-#ifdef HAVE_IPSET
-  if (daemon->ipsets && extract_name(header, n, NULL, daemon->namebuff, EXTR_NAME_EXTRACT, 0))
-    ipsets = domain_find_sets(daemon->ipsets, daemon->namebuff);
+#if defined(HAVE_IPSET) || defined(HAVE_NFTSET)
+  if ((daemon->ipsets || daemon->nftsets) && extract_name(header, n, NULL, daemon->namebuff, EXTR_NAME_EXTRACT, 0))
+    {
+#  ifdef HAVE_IPSET
+      ipsets = domain_find_sets(daemon->ipsets, daemon->namebuff);
+#  endif
+      
+#  ifdef HAVE_NFTSET
+      nftsets = domain_find_sets(daemon->nftsets, daemon->namebuff);
+#  endif
+    }
 #endif
-
-#ifdef HAVE_NFTSET
-  if (daemon->nftsets && extract_name(header, n, NULL, daemon->namebuff, EXTR_NAME_EXTRACT, 0))
-    nftsets = domain_find_sets(daemon->nftsets, daemon->namebuff);
-#endif
-
+  
   if ((pheader = find_pseudoheader(header, n, &plen, &sizep, &is_sign, NULL)))
     {
       /* Get extended RCODE. */
@@ -845,7 +850,7 @@ static size_t process_reply(struct dns_header *header, time_t now, struct server
 	}
       else
 	{
-	  int rc = extract_addresses(header, n, daemon->namebuff, now, ipsets, nftsets, is_sign, check_rebind, no_cache, cache_secure);
+	  int rc = extract_addresses(header, n, daemon->namebuff, now, ipsets, nftsets, check_rebind, no_cache, cache_secure);
 
 	  if (rc != 0)
 	    {
@@ -1880,7 +1885,7 @@ void receive_query(struct listener *listen, time_t now)
 
   if (OPCODE(header) != QUERY)
   {
-      log_query_mysockaddr(F_QUERY | F_FORWARD, "opcode", &source_addr, "non-query", 0);
+      log_query_mysockaddr((auth_dns ? F_NOERR : 0) | F_QUERY | F_FORWARD | F_CONFIG, NULL, &source_addr, NULL, OPCODE(header));
       piholeblocked = FTL_new_query(F_QUERY | F_FORWARD , "opcode",
 				    &source_addr, "non-query", 0, daemon->log_display_id, UDP);
   }
@@ -1889,8 +1894,8 @@ void receive_query(struct listener *listen, time_t now)
 #ifdef HAVE_AUTH
       struct auth_zone *zone;
 #endif
-      log_query_mysockaddr(F_QUERY | F_FORWARD, daemon->namebuff,
-			   &source_addr, auth_dns ? "auth" : "query", type);
+      log_query_mysockaddr((auth_dns ? F_NOERR | F_AUTH : 0 ) | F_QUERY | F_FORWARD, daemon->namebuff,
+			   &source_addr, NULL, type);
       piholeblocked = FTL_new_query(F_QUERY | F_FORWARD , daemon->namebuff,
 				    &source_addr, auth_dns ? "auth" : "query", type, daemon->log_display_id, UDP);
       
@@ -2574,7 +2579,7 @@ unsigned char *tcp_request(int confd, time_t now,
 	  
 	  if (OPCODE(header) != QUERY)
 	    {
-	      log_query_mysockaddr(F_QUERY | F_FORWARD, "opcode", &peer_addr, "non-query", 0);
+	      log_query_mysockaddr((auth_dns ? F_NOERR : 0) |  F_QUERY | F_FORWARD | F_CONFIG, NULL, &peer_addr, NULL, OPCODE(header));
 	      gotname = 0;
 	      flags = F_RCODE;
 	      piholeblocked = FTL_new_query(F_QUERY | F_FORWARD , "opcode",
@@ -2605,8 +2610,8 @@ unsigned char *tcp_request(int confd, time_t now,
 	      saved_question = blockdata_alloc((char *)header, (size_t)size);
 	      saved_size = size;
 	      
-	      log_query_mysockaddr(F_QUERY | F_FORWARD, daemon->namebuff,
-				   &peer_addr, auth_dns ? "auth" : "query", qtype);
+	      log_query_mysockaddr((auth_dns ? F_NOERR | F_AUTH : 0) | F_QUERY | F_FORWARD, daemon->namebuff,
+				   &peer_addr, NULL, qtype);
 	      
 	      piholeblocked = FTL_new_query(F_QUERY | F_FORWARD, daemon->namebuff,
 					    &peer_addr, auth_dns ? "auth" : "query", qtype, daemon->log_display_id, TCP);

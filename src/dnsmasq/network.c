@@ -1588,6 +1588,8 @@ void check_servers(int no_loop_check)
   struct serverfd *sfd, *tmp, **up;
   int port = 0, count;
   int locals = 0;
+
+  (void)no_loop_check;
   
 #ifdef HAVE_LOOP
   if (!no_loop_check)
@@ -1685,7 +1687,7 @@ void check_servers(int no_loop_check)
 	   if (++locals <= LOCALS_LOGGED)
 	     my_syslog(LOG_INFO, _("using only locally-known addresses for %s"), serv->domain);
 	 }
-       else if (serv->flags & SERV_USE_RESOLV)
+       else if (serv->flags & SERV_USE_RESOLV && serv->domain_len != 0)
 	 my_syslog(LOG_INFO, _("using standard nameservers for %s"), serv->domain);
     }
   
@@ -1795,8 +1797,10 @@ int reload_servers(char *fname)
 /* Called when addresses are added or deleted from an interface */
 void newaddress(time_t now)
 {
+#ifdef HAVE_DHCP
   struct dhcp_relay *relay;
-
+#endif
+  
   (void)now;
   
   if (option_bool(OPT_CLEVERBIND) || option_bool(OPT_LOCAL_SERVICE) ||

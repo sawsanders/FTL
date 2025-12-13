@@ -635,6 +635,14 @@ void initConfig(struct config *conf)
 	conf->dns.cache.upstreamBlockedTTL.d.ui = 86400;
 	conf->dns.cache.upstreamBlockedTTL.c = validate_stub; // Only type-based checking
 
+	conf->dns.cache.rrtype.k = "dns.cache.rrtype";
+	conf->dns.cache.rrtype.h = "This is dnsmasq's --cache-rr option, which allows you to define which DNS record types should be cached by PiHole. This option can take a comma-separated list of RR-types as input. The default value ANY caches all record types.";
+	conf->dns.cache.rrtype.a = cJSON_CreateStringReference("Valid DNS record types in the following form: <rrtype>[,<rrtype>...]");
+	conf->dns.cache.rrtype.t = CONF_STRING;
+	conf->dns.cache.rrtype.f = FLAG_RESTART_FTL;
+	conf->dns.cache.rrtype.d.s = (char*)"ANY";
+	conf->dns.cache.rrtype.c = validate_stub; // Only type-based checking
+	
 	// sub-struct dns.blocking
 	conf->dns.blocking.active.k = "dns.blocking.active";
 	conf->dns.blocking.active.h = "Should FTL block queries?";
@@ -1395,7 +1403,7 @@ void initConfig(struct config *conf)
 	conf->misc.etc_dnsmasq_d.c = validate_stub; // Only type-based checking
 
 	conf->misc.dnsmasq_lines.k = "misc.dnsmasq_lines";
-	conf->misc.dnsmasq_lines.h = "Additional lines to inject into the generated dnsmasq configuration.\n Warning: This is an advanced setting and should only be used with care. Incorrectly formatted or duplicated lines as well as lines conflicting with the automatic configuration of Pi-hole can break the embedded dnsmasq and will stop DNS resolution from working.\n\n Use this option with extra care.";
+	conf->misc.dnsmasq_lines.h = "Additional lines to inject into the generated dnsmasq configuration.\n Warning: This is an advanced setting and should only be used with care. Incorrectly formatted or duplicated lines as well as lines conflicting with the automatic configuration of Pi-hole can break the embedded dnsmasq and will stop DNS resolution from working.\n\n Use this option with extra care.\n\n Example: [ \"address=/example.com/192.168.0.1\", \"address=/example.org/192.168.0.2\", \"address=/example.net/192.168.0.3\" ]";
 	conf->misc.dnsmasq_lines.a = cJSON_CreateStringReference("Array of valid dnsmasq config line options");
 	conf->misc.dnsmasq_lines.t = CONF_JSON_STRING_ARRAY;
 	conf->misc.dnsmasq_lines.f = FLAG_RESTART_FTL;

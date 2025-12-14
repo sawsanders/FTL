@@ -97,10 +97,10 @@ static struct {
 	char name[IFNAMSIZ];
 	union all_addr addr4;
 	union all_addr addr6;
-} next_iface = {false, false, "", {{ 0 }}, {{ 0 }}};
+} next_iface = {false, false, "", {}, {}};
 
 // Fork-private copy of the server data the most recent reply came from
-static union mysockaddr last_server = {{ 0 }};
+static union mysockaddr last_server = {};
 
 const char *flagnames[] = {"F_IMMORTAL ", "F_NAMEP ", "F_REVERSE ", "F_FORWARD ", "F_DHCP ", "F_NEG ", "F_HOSTS ", "F_IPV4 ", "F_IPV6 ", "F_BIGNAME ", "F_NXDOMAIN ", "F_CNAME ", "F_DNSKEY ", "F_CONFIG ", "F_DS ", "F_DNSSECOK ", "F_UPSTREAM ", "F_RRNAME ", "F_SERVER ", "F_QUERY ", "F_NOERR ", "F_AUTH ", "F_DNSSEC ", "F_KEYTAG ", "F_SECSTAT ", "F_NO_RR ", "F_IPSET ", "F_NOEXTRA ", "F_DOMAINSRV", "F_RCODE", "F_RR", "F_STALE" };
 
@@ -296,7 +296,7 @@ size_t _FTL_make_answer(struct dns_header *header, char *limit, const size_t len
 
 	// Check for regex redirecting
 	bool redirecting = false;
-	union all_addr redirect_addr4 = {{ 0 }}, redirect_addr6 = {{ 0 }};
+	union all_addr redirect_addr4 = {}, redirect_addr6 = {};
 	if(last_regex_idx > -1)
 	{
 		redirecting = regex_get_redirect(last_regex_idx, &redirect_addr4.addr4, &redirect_addr6.addr6);
@@ -463,21 +463,33 @@ size_t _FTL_make_answer(struct dns_header *header, char *limit, const size_t len
 	// Add A answer record if requested
 	if(flags & F_IPV4)
 	{
-		union all_addr addr = {{ 0 }};
+		union all_addr addr = {};
 
 		// Overwrite with IP address if requested
 		if(redirecting)
+		{
+			log_debug(DEBUG_QUERIES, "Using regex redirected A address");
 			memcpy(&addr, &redirect_addr4, sizeof(addr));
+		}
 		else if(config.dns.blocking.mode.v.blocking_mode == MODE_IP ||
 		        config.dns.blocking.mode.v.blocking_mode == MODE_IP_NODATA_AAAA ||
 		        forced_ip)
 		{
 			if(hostn && config.dns.reply.host.force4.v.b)
+			{
+				log_debug(DEBUG_QUERIES, "Using dns.reply.host.force4");
 				memcpy(&addr, &config.dns.reply.host.v4.v.in_addr, sizeof(addr.addr4));
+			}
 			else if(!hostn && config.dns.reply.blocking.force4.v.b)
+			{
+				log_debug(DEBUG_QUERIES, "Using dns.reply.blocking.force4");
 				memcpy(&addr, &config.dns.reply.blocking.v4.v.in_addr, sizeof(addr.addr4));
+			}
 			else
+			{
+				log_debug(DEBUG_QUERIES, "Using next_iface A address");
 				memcpy(&addr, &next_iface.addr4, sizeof(addr.addr4));
+			}
 		}
 
 		// Debug logging
@@ -499,20 +511,32 @@ size_t _FTL_make_answer(struct dns_header *header, char *limit, const size_t len
 	// Add AAAA answer record if requested
 	if(flags & F_IPV6)
 	{
-		union all_addr addr = {{ 0 }};
+		union all_addr addr = {};
 
 		// Overwrite with IP address if requested
 		if(redirecting)
+		{
+			log_debug(DEBUG_QUERIES, "Using regex redirected AAAA address");
 			memcpy(&addr, &redirect_addr6, sizeof(addr));
+		}
 		else if(config.dns.blocking.mode.v.blocking_mode == MODE_IP ||
 		        forced_ip)
 		{
 			if(hostn && config.dns.reply.host.force6.v.b)
+			{
+				log_debug(DEBUG_QUERIES, "Using dns.reply.host.force6");
 				memcpy(&addr, &config.dns.reply.host.v6.v.in6_addr, sizeof(addr.addr6));
+			}
 			else if(!hostn && config.dns.reply.blocking.force6.v.b)
+			{
+				log_debug(DEBUG_QUERIES, "Using dns.reply.blocking.force6");
 				memcpy(&addr, &config.dns.reply.blocking.v6.v.in6_addr, sizeof(addr.addr6));
+			}
 			else
+			{
+				log_debug(DEBUG_QUERIES, "Using next_iface AAAA address");
 				memcpy(&addr, &next_iface.addr6, sizeof(addr.addr6));
+			}
 		}
 
 		// Debug logging
@@ -537,7 +561,7 @@ size_t _FTL_make_answer(struct dns_header *header, char *limit, const size_t len
 		if(flags == 0)
 		{
 			// REFUSED
-			union all_addr addr = {{ 0 }};
+			union all_addr addr = {};
 			addr.log.rcode = REFUSED;
 			addr.log.ede = EDE_BLOCKED;
 			log_query(F_RCODE | F_HOSTS, name, &addr, (char*)blockingreason, 0);
@@ -1190,7 +1214,7 @@ static void check_pihole_PTR(char *domain)
 	}
 
 	// Convert PTR request into numeric form
-	union all_addr addr = {{ 0 }};
+	union all_addr addr = {};
 	const int flags = in_arpa_name_2_addr(domain, &addr);
 
 	// Check if this is a valid in-addr.arpa (IPv4) or ip6.[int|arpa] (IPv6)
@@ -3628,11 +3652,11 @@ void FTL_TCP_worker_created(const int confd)
 	{
 		// Get peer IP address (client)
 		char peer_ip[ADDRSTRLEN] = { 0 };
-		union mysockaddr peer_sockaddr = {{ 0 }};
+		union mysockaddr peer_sockaddr = {};
 		socklen_t peer_len = sizeof(union mysockaddr);
 		if (getpeername(confd, (struct sockaddr *)&peer_sockaddr, &peer_len) != -1)
 		{
-			union all_addr peer_addr = {{ 0 }};
+			union all_addr peer_addr = {};
 			if (peer_sockaddr.sa.sa_family == AF_INET6)
 				peer_addr.addr6 = peer_sockaddr.in6.sin6_addr;
 			else
@@ -3642,11 +3666,11 @@ void FTL_TCP_worker_created(const int confd)
 
 		// Get local IP address (interface)
 		char local_ip[ADDRSTRLEN] = { 0 };
-		union mysockaddr iface_sockaddr = {{ 0 }};
+		union mysockaddr iface_sockaddr = {};
 		socklen_t iface_len = sizeof(union mysockaddr);
 		if(getsockname(confd, (struct sockaddr *)&iface_sockaddr, &iface_len) != -1)
 		{
-			union all_addr iface_addr = {{ 0 }};
+			union all_addr iface_addr = {};
 			if (iface_sockaddr.sa.sa_family == AF_INET6)
 				iface_addr.addr6 = iface_sockaddr.in6.sin6_addr;
 			else

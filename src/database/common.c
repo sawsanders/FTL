@@ -219,7 +219,6 @@ int dbquery(sqlite3* db, const char *format, ...)
 
 	log_debug(DEBUG_DATABASE, "dbquery: \"%s\"", query);
 
-
 	int rc = sqlite3_exec(db, query, NULL, NULL, NULL);
 	if( rc != SQLITE_OK ){
 		log_err("ERROR: SQL query \"%s\" failed: %s (%s)",
@@ -241,7 +240,7 @@ int dbquery(sqlite3* db, const char *format, ...)
 static bool create_counter_table(sqlite3* db)
 {
 	// Start transaction
-	SQL_bool(db, "BEGIN TRANSACTION");
+	SQL_bool(db, "BEGIN");
 
 	// Create FTL table in the database (holds properties like database version, etc.)
 	SQL_bool(db, "CREATE TABLE counters ( id INTEGER PRIMARY KEY NOT NULL, value INTEGER NOT NULL );");
@@ -274,7 +273,7 @@ static bool create_counter_table(sqlite3* db)
 		return false;
 	}
 	// End transaction
-	SQL_bool(db, "COMMIT");
+	SQL_bool(db, "END");
 
 	return true;
 }
@@ -879,7 +878,7 @@ int db_query_int_int(sqlite3 *db, const char* querystr, const int arg)
 
 int db_query_int_str(sqlite3 *db, const char* querystr, const char *arg)
 {
-	log_debug(DEBUG_DATABASE, "db_query_int_str: \"%s\"", querystr);
+	log_debug(DEBUG_DATABASE, "db_query_int_str: \"%s\" with \"%s\"", querystr, arg);
 
 	sqlite3_stmt* stmt;
 	int rc = sqlite3_prepare_v2(db, querystr, -1, &stmt, NULL);
@@ -968,6 +967,8 @@ double db_query_double(sqlite3 *db, const char* querystr)
 
 int db_query_int_from_until(sqlite3 *db, const char* querystr, const double from, const double until)
 {
+	log_debug(DEBUG_DATABASE, "db_query_int_from_until: \"%s\" (from: %f, until: %f)", querystr, from, until);
+
 	sqlite3_stmt* stmt;
 	int rc = sqlite3_prepare_v2(db, querystr, -1, &stmt, NULL);
 	if( rc != SQLITE_OK ){
@@ -1010,6 +1011,8 @@ int db_query_int_from_until(sqlite3 *db, const char* querystr, const double from
 
 int db_query_int_from_until_type(sqlite3 *db, const char* querystr, const double from, const double until, const int type)
 {
+	log_debug(DEBUG_DATABASE, "db_query_int_from_until_type: \"%s\" (from: %f, until: %f, type: %d)", querystr, from, until, type);
+
 	sqlite3_stmt* stmt;
 	int rc = sqlite3_prepare_v2(db, querystr, -1, &stmt, NULL);
 	if( rc != SQLITE_OK ){

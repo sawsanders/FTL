@@ -1,7 +1,7 @@
-# Pi-hole configuration file (v6.3.2-8-g58a618e2-dirty) on branch tweak/db_performance
+# Pi-hole configuration file (v6.4.1-55-g7208be13) on branch new/hide_connection_errors
 # Encoding: UTF-8
 # This file is managed by pihole-FTL
-# Last updated on 2025-11-01 13:12:20 UTC
+# Last updated on 2025-12-21 11:13:49 UTC
 
 [dns]
   # Upstream DNS Servers to be used by Pi-hole. If this is not set, Pi-hole will not
@@ -1435,6 +1435,19 @@
   #     true or false
   hide_dnsmasq_warn = false
 
+  # Should FTL hide network connection errors?
+  #
+  # By default, FTL reports network connection errors (e.g., Connection prematurely
+  # closed by remote server) to the FTL log file. These warnings can be useful to
+  # identify intermittent network problems or general problem with upstream servers.
+  # However, in some setups, these warnings may be expected (e.g. due to low-quality
+  # Internet connectivity) and cannot be fixed. Enabling this setting will hide all
+  # connection warnings.
+  #
+  # Allowed values are:
+  #     true or false
+  hide_connection_error = false
+
   [misc.check]
     # Pi-hole is very lightweight on resources. Nevertheless, this does not mean that you
     # should run Pi-hole on a server that is otherwise extremely busy as queuing on the
@@ -1690,7 +1703,7 @@
   all = true ### CHANGED, default = false
 
 # Configuration statistics:
-# 163 total entries out of which 109 entries are default
+# 164 total entries out of which 110 entries are default
 # --> 54 entries are modified
 # 3 entries are forced through environment:
 #   - misc.nice

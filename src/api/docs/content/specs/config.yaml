@@ -557,6 +557,8 @@ components:
                   type: boolean
                 hide_dnsmasq_warn:
                   type: boolean
+                hide_connection_error:
+                  type: boolean
                 check:
                   type: object
                   properties:
@@ -845,6 +847,7 @@ components:
             readOnly: false
             normalizeCPU: false
             hide_dnsmasq_warn: false
+            hide_connection_error: false
             check:
               load: true
               shmem: 90

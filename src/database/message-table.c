@@ -994,11 +994,18 @@ int count_messages(void)
 		return count;
 	}
 
-	// Get message
+	// Count messages
 	sqlite3_stmt* stmt = NULL;
-	const char *querystr = config.misc.hide_dnsmasq_warn.v.b ?
-			"SELECT COUNT(*) FROM message WHERE type != 'DNSMASQ_WARN'" :
-			"SELECT COUNT(*) FROM message";
+	const char *querystr;
+	if(config.misc.hide_dnsmasq_warn.v.b && config.misc.hide_connection_error.v.b)
+		querystr = "SELECT COUNT(*) FROM message WHERE type NOT IN ('DNSMASQ_WARN', 'CONNECTION_ERROR')";
+	else if(config.misc.hide_dnsmasq_warn.v.b)
+		querystr = "SELECT COUNT(*) FROM message WHERE type != 'DNSMASQ_WARN'";
+	else if(config.misc.hide_connection_error.v.b)
+		querystr = "SELECT COUNT(*) FROM message WHERE type != 'CONNECTION_ERROR'";
+	else
+		querystr = "SELECT COUNT(*) FROM message";
+
 	int rc = sqlite3_prepare_v2(db, querystr, -1, &stmt, NULL);
 	if( rc != SQLITE_OK ){
 		log_err("count_messages() - SQL error prepare SELECT: %s",

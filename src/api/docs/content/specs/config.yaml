@@ -557,6 +557,8 @@ components:
                   type: boolean
                 hide_dnsmasq_warn:
                   type: boolean
+                hide_connection_error:
+                  type: boolean
                 check:
                   type: object
                   properties:
@@ -784,7 +786,7 @@ components:
             threads: 0
             headers:
               - "X-DNS-Prefetch-Control: off"
-              - "Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+              - "Content-Security-Policy: default-src 'none'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; img-src 'self'; manifest-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
               - "X-Frame-Options: DENY"
               - "X-XSS-Protection: 0"
               - "X-Content-Type-Options: nosniff"
@@ -845,6 +847,7 @@ components:
             readOnly: false
             normalizeCPU: false
             hide_dnsmasq_warn: false
+            hide_connection_error: false
             check:
               load: true
               shmem: 90

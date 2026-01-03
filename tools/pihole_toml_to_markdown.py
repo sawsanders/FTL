@@ -235,15 +235,13 @@ sudo pihole-FTL --config dns.dnssec true
             documentation.append(f'=== "CLI"')
             documentation.append("    ```shell")
             if example_display_value.strip().startswith("["):
-                # This is an array - need to escape quotes for CLI
+                # This is an array - wrap the array in single quotes for CLI
                 if "\n" in example_display_value:
                     # Flatten multi-line array to single line
                     array_str = "".join(example_display_value.split())
                 else:
                     array_str = example_display_value
-                # Escape the internal quotes for shell use
-                escaped_array = array_str.replace('"', '\\"')
-                documentation.append(f'    sudo pihole-FTL --config {full_key} "{escaped_array}"')
+                documentation.append(f"    sudo pihole-FTL --config {full_key} '{array_str}'")
             else:
                 documentation.append(f"    sudo pihole-FTL --config {full_key} {example_display_value}")
             documentation.append("    ```")

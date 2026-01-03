@@ -1071,7 +1071,7 @@ void initConfig(struct config *conf)
 	conf->webserver.headers.f = FLAG_RESTART_FTL;
 	conf->webserver.headers.d.json = cJSON_CreateArray();
 	cJSON_AddItemToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("X-DNS-Prefetch-Control: off"));
-	cJSON_AddItemToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"));
+	cJSON_AddItemToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("Content-Security-Policy: default-src 'none'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; img-src 'self'; manifest-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"));
 	cJSON_AddItemToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("X-Frame-Options: DENY"));
 	cJSON_AddItemToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("X-XSS-Protection: 0"));
 	cJSON_AddItemToArray(conf->webserver.headers.d.json, cJSON_CreateStringReference("X-Content-Type-Options: nosniff"));
@@ -1435,6 +1435,12 @@ void initConfig(struct config *conf)
 	conf->misc.hide_dnsmasq_warn.t = CONF_BOOL;
 	conf->misc.hide_dnsmasq_warn.d.b = false;
 	conf->misc.hide_dnsmasq_warn.c = validate_stub; // Only type-based checking
+
+	conf->misc.hide_connection_error.k = "misc.hide_connection_error";
+	conf->misc.hide_connection_error.h = "Should FTL hide network connection errors?\n\n By default, FTL reports network connection errors (e.g., Connection prematurely closed by remote server) to the FTL log file. These warnings can be useful to identify intermittent network problems or general problem with upstream servers. However, in some setups, these warnings may be expected (e.g. due to low-quality Internet connectivity) and cannot be fixed. Enabling this setting will hide all connection warnings.";
+	conf->misc.hide_connection_error.t = CONF_BOOL;
+	conf->misc.hide_connection_error.d.b = false;
+	conf->misc.hide_connection_error.c = validate_stub; // Only type-based checking
 
 	// sub-struct misc.check
 	conf->misc.check.load.k = "misc.check.load";

@@ -27,14 +27,11 @@ int api_history_database(struct ftl_conn *api)
 {
 	double from = 0, until = 0;
 	const int interval = 600;
-	if(api->request->query_string != NULL)
-	{
-		get_double_var(api->request->query_string, "from", &from);
-		get_double_var(api->request->query_string, "until", &until);
-	}
 
 	// Check if we received the required information
-	if(from < 1.0 || until < 1.0)
+	if(api->request->query_string == NULL ||
+	  (!get_double_var(api->request->query_string, "from", &from) ||
+	   !get_double_var(api->request->query_string, "until", &until)))
 	{
 		return send_json_error(api, 400,
 		                       "bad_request",
@@ -110,7 +107,7 @@ int api_history_database(struct ftl_conn *api)
 	// Loop over returned data and accumulate results
 	cJSON *history = JSON_NEW_ARRAY();
 	cJSON *item = NULL;
-	unsigned int previous_timeslot = 0u, blocked = 0u, total = 0u, cached = 0u;
+	unsigned int previous_timeslot = 0u, blocked = 0u, total = 0u, cached = 0u, forwarded = 0u;
 	while((rc = sqlite3_step(stmt)) == SQLITE_ROW)
 	{
 		// Get timestamp and derive timeslot from it
@@ -131,6 +128,9 @@ int api_history_database(struct ftl_conn *api)
 				// Add and reset blocked counter
 				JSON_ADD_NUMBER_TO_OBJECT(item, "blocked", blocked);
 				blocked = 0;
+				// Add and reset forwarded counter
+				JSON_ADD_NUMBER_TO_OBJECT(item, "forwarded", forwarded);
+				forwarded = 0;
 				JSON_ADD_ITEM_TO_ARRAY(history, item);
 			}
 
@@ -148,6 +148,8 @@ int api_history_database(struct ftl_conn *api)
 			blocked += count;
 		else if(is_cached(status))
 			cached += count;
+		else if(is_forwarded(status))
+			forwarded += count;
 	}
 
 	// Append final timeslot at the end if applicable
@@ -159,6 +161,8 @@ int api_history_database(struct ftl_conn *api)
 		JSON_ADD_NUMBER_TO_OBJECT(item, "cached", cached);
 		// Add blocked counter
 		JSON_ADD_NUMBER_TO_OBJECT(item, "blocked", blocked);
+		// Add forwarded counter
+		JSON_ADD_NUMBER_TO_OBJECT(item, "forwarded", forwarded);
 		JSON_ADD_ITEM_TO_ARRAY(history, item);
 	}
 

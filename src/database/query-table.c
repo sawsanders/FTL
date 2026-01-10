@@ -23,6 +23,8 @@
 #include "timers.h"
 // runGC()
 #include "gc.h"
+// file_exists()
+#include "files.h"
 // flush_message_table()
 #include "database/message-table.h"
 
@@ -65,9 +67,12 @@ sqlite3_int64 __attribute__((pure)) get_max_db_idx(void)
 
 void db_counts(sqlite3_int64 *last_idx, sqlite3_int64 *mem_num, sqlite3_int64 *disk_num)
 {
-	*last_idx = last_mem_db_idx;
-	*mem_num = mem_db_num;
-	*disk_num = disk_db_num;
+	if(last_idx != NULL)
+		*last_idx = last_mem_db_idx;
+	if(mem_num != NULL)
+		*mem_num = mem_db_num;
+	if(disk_num != NULL)
+		*disk_num = disk_db_num;
 }
 
 // Initialize in-memory database, add queries table and indices
@@ -92,11 +97,15 @@ bool init_memory_database(void)
 	// Try to open in-memory database
 	// The :memory: database always has synchronous=OFF since the content of
 	// it is ephemeral and is not expected to survive a power outage.
-	rc = sqlite3_open_v2(":memory:", &_memdb, SQLITE_OPEN_READWRITE, NULL);
+	// If database.forceDisk is set, we do not want an in-memory database but, instead,
+	// use an additional on-disk database for query storage. This database is always
+	// recreated from scratch on FTL start and deleted on FTL stop.
+	const char *db_path = config.database.forceDisk.v.b ? config.files.tmp_db.v.s : ":memory:";
+	rc = sqlite3_open_v2(db_path, &_memdb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
 	if( rc != SQLITE_OK )
 	{
-		log_err("init_memory_database(): Step error while trying to open database: %s",
-		        sqlite3_errstr(rc));
+		log_err("init_memory_database(): Error opening database: %s at %s",
+		        sqlite3_errstr(rc), db_path);
 		return false;
 	}
 
@@ -104,10 +113,20 @@ bool init_memory_database(void)
 	rc = sqlite3_busy_handler(_memdb, sqliteBusyCallback, NULL);
 	if( rc != SQLITE_OK )
 	{
-		log_err("init_memory_database(): Step error while trying to set busy timeout: %s",
+		log_err("init_memory_database(): Error setting busy timeout: %s",
 		        sqlite3_errstr(rc));
 		sqlite3_close(_memdb);
 		return false;
+	}
+
+	// Erase any existing on-disk temporary database if used. This process
+	// works even for a badly corrupted database file.
+	if(config.database.forceDisk.v.b)
+	{
+		log_warn("Using on-disk history database. This will reduce performance.");
+		sqlite3_db_config(_memdb, SQLITE_DBCONFIG_RESET_DATABASE, 1, 0);
+		sqlite3_exec(_memdb, "VACUUM", NULL, NULL, NULL);
+		sqlite3_db_config(_memdb, SQLITE_DBCONFIG_RESET_DATABASE, 0, 0);
 	}
 
 	// Create query_storage table in the database
@@ -155,7 +174,7 @@ bool init_memory_database(void)
 		rc = sqlite3_exec(_memdb, "PRAGMA disk.journal_mode=WAL", NULL, NULL, NULL);
 		if( rc != SQLITE_OK )
 		{
-			log_err("init_memory_database(): Step error while trying to set journal mode: %s",
+			log_err("init_memory_database(): Error setting journal mode (WAL): %s",
 			        sqlite3_errstr(rc));
 			sqlite3_close(_memdb);
 			return false;
@@ -176,7 +195,7 @@ bool init_memory_database(void)
 		rc = sqlite3_exec(_memdb, "PRAGMA disk.journal_mode=DELETE", NULL, NULL, NULL);
 		if( rc != SQLITE_OK )
 		{
-			log_err("init_memory_database(): Step error while trying to set journal mode: %s",
+			log_err("init_memory_database(): Error setting journal mode (DELETE): %s",
 			        sqlite3_errstr(rc));
 			sqlite3_close(_memdb);
 			return false;
@@ -338,9 +357,10 @@ sqlite3 *__attribute__((pure)) get_memdb(void)
 }
 
 // Get memory usage and size of in-memory tables
-static bool get_memdb_size(sqlite3 *db, size_t *memsize, int *queries)
+bool get_memdb_size(size_t *memsize, int *queries)
 {
 	int rc;
+	sqlite3 *db = get_memdb();
 	sqlite3_stmt *stmt = NULL;
 	size_t page_count, page_size;
 
@@ -391,7 +411,7 @@ static bool get_memdb_size(sqlite3 *db, size_t *memsize, int *queries)
 	*memsize = page_count * page_size;
 
 	// Get number of queries in the memory table
-	if((*queries = get_number_of_queries_in_DB(db, "query_storage", NULL)) == DB_FAILED)
+	if(queries != NULL && (*queries = get_number_of_queries_in_DB(db, "query_storage", NULL)) == DB_FAILED)
 		return false;
 
 	return true;
@@ -405,8 +425,7 @@ static void log_in_memory_usage(void)
 
 	size_t memsize = 0;
 	int queries = 0;
-	sqlite3 *memdb = get_memdb();
-	if(get_memdb_size(memdb, &memsize, &queries))
+	if(get_memdb_size(&memsize, &queries))
 	{
 		char prefix[2] = { 0 };
 		double num = 0.0;
@@ -1543,6 +1562,11 @@ bool queries_to_database(void)
 		return true;
 	}
 
+	// Begin transaction
+	SQL_bool(get_memdb(), "BEGIN TRANSACTION");
+
+	lock_shm();
+
 	// The upper bound is the last query in the array, the lower bound is
 	// indirectly given by the first query older than 30 seconds - we do not
 	// expect replies to still arrive after 30 seconds - they are anyway
@@ -1556,6 +1580,7 @@ bool queries_to_database(void)
 		if(query == NULL)
 		{
 			log_err("Memory error in queries_to_database() when trying to access query %u", last_query);
+			unlock_shm();
 			return false;
 		}
 		if(query->timestamp < limit_timestamp || query->flags.database.imported)
@@ -1811,6 +1836,9 @@ bool queries_to_database(void)
 		query->flags.database.changed = false;
 	}
 
+	// Release shared memory before committing transaction
+	unlock_shm();
+
 	// Update number of queries in in-memory database
 	mem_db_num = get_number_of_queries_in_DB(NULL, "query_storage", NULL);
 
@@ -1819,6 +1847,9 @@ bool queries_to_database(void)
 		log_debug(DEBUG_DATABASE, "In-memory database: Added %u new, updated %u known queries", added, updated);
 		log_in_memory_usage();
 	}
+
+	// Commit transaction
+	SQL_bool(get_memdb(), "COMMIT");
 
 	return true;
 }

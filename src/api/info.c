@@ -18,7 +18,7 @@
 #include "config/setupVars.h"
 // counters
 #include "shmem.h"
-// get_FTL_db_filesize()
+// get_FTL_db_stats()
 #include "files.h"
 // get_sqlite3_version()
 #include "database/common.h"
@@ -93,8 +93,8 @@ int api_info_database(struct ftl_conn *api)
 
 	// Add database stat details
 	struct stat st;
-	get_database_stat(&st);
-	JSON_ADD_NUMBER_TO_OBJECT(json, "size", st.st_size); // Total size, in bytes
+	off_t size = get_FTL_db_stats(&st);
+	JSON_ADD_NUMBER_TO_OBJECT(json, "size", size); // Total size, in bytes
 
 	// File type
 	const char *filetype;

@@ -135,6 +135,10 @@
 // Default: 2592000 (once per month)
 #define DATABASE_MACVENDOR_INTERVAL 2592000
 
+// How often should we delete old queries from the database? [seconds]
+// Default: 86400 (once per day)
+#define DATABASE_DELETE_OLD_QUERIES_INTERVAL 86400
+
 // Over how many seconds should the query-per-second (QPS) value be averaged?
 // Default: 30 (seconds)
 #define QPS_AVGLEN 30

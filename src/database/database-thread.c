@@ -151,6 +151,12 @@ void *DB_thread(void *val)
 
 	// Random minute for daily cleaning task between 3:10 and 3:50 am
 	const int cleaning_minute = 10u + (rand() % 40);
+	// Asynchronously import queries from the on-disk database
+	if(config.database.DBimport.v.b)
+		DB_read_queries();
+
+	// Log some information about the imported queries (if any)
+	log_counter_info();
 
 	// Save timestamp as we do not want to store immediately
 	// to the database

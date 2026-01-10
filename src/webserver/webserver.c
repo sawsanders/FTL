@@ -1037,6 +1037,9 @@ void *webserver_thread(void *val)
 	// Set thread name
 	prctl(PR_SET_NAME, thread_names[WEBSERVER], 0, 0, 0);
 
+	// Initialize FTL HTTP server
+	http_init();
+
 	// Initial delay until we check the certificate for the first time
 	thread_sleepms(WEBSERVER, 2000);
 

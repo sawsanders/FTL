@@ -887,8 +887,10 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	query_set_status_init(query, QUERY_UNKNOWN);
 	query->domainID = domainID;
 	query->clientID = clientID;
-	// Initialize database field, will be set when the query is stored in the long-term DB
-	query->flags.database.stored = false;
+	// Initialize database fields
+	// This query is new and not yet known to the database
+	query->db = -1;
+	query->flags.database.imported = false;
 	query->flags.database.changed = true;
 	query->flags.complete = false;
 	query->response = querytimestamp;
@@ -919,8 +921,6 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	// (domain,client,type) tuple was already seen before
 	query->cacheID = findCacheID(domainID, clientID, querytype, true);
 
-	// This query is new and not yet known to the database
-	query->db = -1;
 
 	// Increase DNS queries counter
 	counters->queries++;
@@ -3305,18 +3305,11 @@ void FTL_fork_and_bind_sockets(struct passwd *ent_pw, bool dnsmasq_start)
 	if(!init_memory_database())
 		log_crit("Cannot initialize in-memory database.");
 
-	// Flush messages stored in the long-term database
-	if(!FTLDBerror())
-		flush_message_table();
-
 	// Verify checksum of this binary early on to ensure that the binary is
 	// not corrupted and that the binary is not tampered with. We can only
 	// do this here as we need the database to be properly initialized
 	// in case we need to store the verification result
 	verify_FTL(false);
-
-	// Initialize in-memory database starting index
-	init_disk_db_idx();
 
 	// Handle real-time signals in this process (and its children)
 	// Helper processes are already split from the main instance
@@ -3430,9 +3423,6 @@ void FTL_fork_and_bind_sockets(struct passwd *ent_pw, bool dnsmasq_start)
 		else
 			log_info("Failed to obtain information about FTL user");
 	}
-
-	// Initialize FTL HTTP server
-	http_init();
 
 	forked = true;
 }

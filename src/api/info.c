@@ -937,7 +937,8 @@ static int api_info_messages_GET(struct ftl_conn *api)
 	}
 
 	// Filter messages if requested
-	if(config.misc.hide_dnsmasq_warn.v.b)
+	if(config.misc.hide_dnsmasq_warn.v.b ||
+	   config.misc.hide_connection_error.v.b)
 	{
 		// Create new array
 		cJSON *filtered = cJSON_CreateArray();
@@ -956,7 +957,11 @@ static int api_info_messages_GET(struct ftl_conn *api)
 				continue;
 
 			// Skip if it is a DNSMASQ_WARN message
-			if(strcmp(type->valuestring, "DNSMASQ_WARN") == 0)
+			if(config.misc.hide_dnsmasq_warn.v.b && strcmp(type->valuestring, "DNSMASQ_WARN") == 0)
+				continue;
+
+			// Skip if it is a CONNECTION_ERROR message
+			if(config.misc.hide_connection_error.v.b && strcmp(type->valuestring, "CONNECTION_ERROR") == 0)
 				continue;
 
 			// else: Add a copy to the filtered array

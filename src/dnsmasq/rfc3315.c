@@ -34,8 +34,8 @@ struct state {
 };
 
 static int dhcp6_maybe_relay(struct state *state, unsigned char *inbuff, size_t sz, 
-			     struct in6_addr *client_addr, int is_unicast, time_t now);
-static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbuff, size_t sz, int is_unicast, time_t now);
+			     struct in6_addr *client_addr, time_t now);
+static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbuff, size_t sz, time_t now);
 static void log6_opts(int nest, unsigned int xid, void *start_opts, void *end_opts);
 static void log6_packet(struct state *state, char *type, struct in6_addr *addr, char *string);
 static void log6_quiet(struct state *state, char *type, struct in6_addr *addr, char *string);
@@ -97,8 +97,7 @@ unsigned short dhcp6_reply(struct dhcp_context *context, int multicast_dest, int
   state.tags = NULL;
   state.link_address = NULL;
 
-  if (dhcp6_maybe_relay(&state, daemon->dhcp_packet.iov_base, sz, client_addr, 
-			IN6_IS_ADDR_MULTICAST(client_addr), now))
+  if (dhcp6_maybe_relay(&state, daemon->dhcp_packet.iov_base, sz, client_addr, now))
     return msg_type == DHCP6RELAYFORW ? DHCPV6_SERVER_PORT : DHCPV6_CLIENT_PORT;
 
   return 0;
@@ -106,7 +105,7 @@ unsigned short dhcp6_reply(struct dhcp_context *context, int multicast_dest, int
 
 /* This cost me blood to write, it will probably cost you blood to understand - srk. */
 static int dhcp6_maybe_relay(struct state *state, unsigned char *inbuff, size_t sz, 
-			     struct in6_addr *client_addr, int is_unicast, time_t now)
+			     struct in6_addr *client_addr, time_t now)
 {
   uint8_t *end = inbuff + sz;
   uint8_t *opts = inbuff + 34;
@@ -184,7 +183,7 @@ static int dhcp6_maybe_relay(struct state *state, unsigned char *inbuff, size_t 
 	  return 0;
 	}
 
-      return dhcp6_no_relay(state, msg_type, inbuff, sz, is_unicast, now);
+      return dhcp6_no_relay(state, msg_type, inbuff, sz, now);
     }
 
   /* must have at least msg_type+hopcount+link_address+peer_address+minimal size option
@@ -250,9 +249,7 @@ static int dhcp6_maybe_relay(struct state *state, unsigned char *inbuff, size_t 
 	      /* RFC6221 para 4 */
 	      if (!IN6_IS_ADDR_UNSPECIFIED(&align))
 		state->link_address = &align;
-	      /* zero is_unicast since that is now known to refer to the 
-		 relayed packet, not the original sent by the client */
-	      if (!dhcp6_maybe_relay(state, opt6_ptr(opt, 0), opt6_len(opt), client_addr, 0, now))
+	      if (!dhcp6_maybe_relay(state, opt6_ptr(opt, 0), opt6_len(opt), client_addr, now))
 		return 0;
 	    }
 	  else
@@ -264,7 +261,7 @@ static int dhcp6_maybe_relay(struct state *state, unsigned char *inbuff, size_t 
   return 1;
 }
 
-static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbuff, size_t sz, int is_unicast, time_t now)
+static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbuff, size_t sz, time_t now)
 {
   void *opt;
   int i, o, o1, start_opts, start_msg;
@@ -369,18 +366,6 @@ static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbu
   o = new_opt6(OPTION6_SERVER_ID);
   put_opt6(daemon->duid, daemon->duid_len);
   end_opt6(o);
-
-  if (is_unicast &&
-      (msg_type == DHCP6REQUEST || msg_type == DHCP6RENEW || msg_type == DHCP6RELEASE || msg_type == DHCP6DECLINE))
-    
-    {  
-      outmsgtype = DHCP6REPLY;
-      o1 = new_opt6(OPTION6_STATUS_CODE);
-      put_opt6_short(DHCP6USEMULTI);
-      put_opt6_string("Use multicast");
-      end_opt6(o1);
-      goto done;
-    }
 
   /* match vendor and user class options */
   for (vendor = daemon->dhcp_vendors; vendor; vendor = vendor->next)
@@ -1304,7 +1289,6 @@ static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbu
 
   log_tags(tagif, state->xid);
 
- done:
   /* Fill in the message type. Note that we store the offset,
      not a direct pointer, since the packet memory may have been 
      reallocated. */

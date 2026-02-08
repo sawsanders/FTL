@@ -349,7 +349,8 @@ void db_init(void)
 	// Check if database exists, if not create empty database
 	if(!file_exists(config.files.database.v.s))
 	{
-		log_warn("No database file found, creating new (empty) database");
+		log_warn("No database file found, creating new (empty) database at %s",
+		         config.files.database.v.s);
 		if (!db_create())
 		{
 			log_err("Creation of database failed, database is not available");
@@ -360,14 +361,23 @@ void db_init(void)
 	// Explicitly set permissions to 0640
 	// 640 =            u+w       u+r       g+r
 	const mode_t mode = S_IWUSR | S_IRUSR | S_IRGRP;
-	chmod_file(config.files.database.v.s, mode);
+	if(file_exists(config.files.database.v.s))
+		chmod_file(config.files.database.v.s, mode);
 
 	// Open database
-	sqlite3 *db = dbopen(false, false);
+	sqlite3 *db = dbopen(false, true);
+
+	// Explicitly set permissions if file just created
+	if(file_exists(config.files.database.v.s))
+		chmod_file(config.files.database.v.s, mode);
 
 	// Return if database access failed
 	if(!db)
+	{
+		log_err("Database not available!");
+		DBerror = true;
 		return;
+	}
 
 	// Test FTL_db version and see if we need to upgrade the database file
 	int dbversion = db_get_int(db, DB_VERSION);
@@ -783,12 +793,73 @@ bool db_set_FTL_property(sqlite3 *db, const enum ftl_table_props ID, const int v
 
 bool db_set_counter(sqlite3 *db, const enum counters_table_props ID, const int value)
 {
-	int ret = dbquery(db, "INSERT OR REPLACE INTO counters (id, value) VALUES ( %u, %d );", ID, value);
+	sqlite3_stmt *stmt = NULL;
+	int ret = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO counters (id, value) VALUES (?,?)", -1, &stmt, NULL);
 	if(ret != SQLITE_OK)
 	{
 		checkFTLDBrc(ret);
 		return false;
 	}
+	ret = sqlite3_bind_int(stmt, 1, ID);
+	if(ret != SQLITE_OK)
+	{
+		checkFTLDBrc(ret);
+		sqlite3_finalize(stmt);
+		return false;
+	}
+	ret = sqlite3_bind_int(stmt, 2, value);
+	if(ret != SQLITE_OK)
+	{
+		checkFTLDBrc(ret);
+		sqlite3_finalize(stmt);
+		return false;
+	}
+
+	ret = sqlite3_step(stmt);
+	if(ret != SQLITE_DONE)
+	{
+		checkFTLDBrc(ret);
+		sqlite3_finalize(stmt);
+		return false;
+	}
+
+	sqlite3_finalize(stmt);
+	return true;
+}
+
+bool db_update_disk_counter(sqlite3 *db, const enum counters_table_props ID, const int change)
+{
+	sqlite3_stmt *stmt = NULL;
+	int ret = sqlite3_prepare_v2(db, "UPDATE counters SET value = value + ? WHERE id = ?", -1, &stmt, NULL);
+	if(ret != SQLITE_OK)
+	{
+		checkFTLDBrc(ret);
+		return false;
+	}
+	ret = sqlite3_bind_int(stmt, 1, ID);
+	if(ret != SQLITE_OK)
+	{
+		checkFTLDBrc(ret);
+		sqlite3_finalize(stmt);
+		return false;
+	}
+	ret = sqlite3_bind_int(stmt, 2, change);
+	if(ret != SQLITE_OK)
+	{
+		checkFTLDBrc(ret);
+		sqlite3_finalize(stmt);
+		return false;
+	}
+
+	ret = sqlite3_step(stmt);
+	if(ret != SQLITE_DONE)
+	{
+		checkFTLDBrc(ret);
+		sqlite3_finalize(stmt);
+		return false;
+	}
+
+	sqlite3_finalize(stmt);
 	return true;
 }
 
@@ -1054,4 +1125,52 @@ int db_query_int_from_until_type(sqlite3 *db, const char* querystr, const double
 const char *get_sqlite3_version(void)
 {
 	return sqlite3_libversion();
+}
+
+/**
+ * get_row_count - Get the row count of an in-memory SQLite table.
+ *
+ * Opens a transient SQLite connection (dbopen(false, false)), prepares and
+ * executes a "SELECT COUNT(*) FROM <table>;" query for the given table name,
+ * and returns the number of rows in that table.
+ * 
+ * @param table_name The name of the table to get the size of.
+ * @param memory If true, use the in-memory database; if false, use the on-disk database.
+ * @return The number of rows in the table, or -2 if the database could not be opened,
+ *         or -3 if the SQL statement could not be prepared (e.g. invalid table name).
+ */
+int64_t get_row_count(const char *table_name, const bool memory)
+{
+	sqlite3 *db = memory ? get_memdb() : dbopen(true, false);
+	if(!db)
+		return -2;
+
+	sqlite3_stmt *stmt = NULL;
+	const char * const sql = "SELECT COUNT(*) FROM %s;";
+	char * const query = sqlite3_mprintf(sql, table_name);
+	if(sqlite3_prepare_v2(db, query, -1, &stmt, NULL) != SQLITE_OK)
+	{
+		log_err("Failed to prepare statement to get size of in-memory table %s: %s",
+		        table_name, sqlite3_errmsg(db));
+		sqlite3_free(query);
+		dbclose(&db);
+		return -3;
+	}
+	sqlite3_free(query);
+
+	int64_t size = -1;
+	if(sqlite3_step(stmt) == SQLITE_ROW)
+	{
+		size = sqlite3_column_int64(stmt, 0);
+	}
+	else
+	{
+		log_err("Failed to step statement to get size of in-memory table %s: %s",
+		        table_name, sqlite3_errmsg(db));
+	}
+
+	sqlite3_finalize(stmt);
+	if(!memory)
+		dbclose(&db);
+	return size;
 }

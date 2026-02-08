@@ -1096,6 +1096,16 @@ int api_queries(struct ftl_conn *api)
 	JSON_ADD_NUMBER_TO_OBJECT(json, "recordsFiltered", filtering ? recordsCounted : recordsTotal);
 	JSON_ADD_NUMBER_TO_OBJECT(json, "draw", draw);
 
+	// Add number of queries and earliest timestamp in in-memory database
+	double earliest_timestamp_mem = 0.0;
+	get_db_info(false, NULL, &earliest_timestamp_mem);
+	JSON_ADD_NUMBER_TO_OBJECT(json, "earliest_timestamp", earliest_timestamp_mem);
+
+	// Add number of queries and earliest timestamp in on-disk database
+	double earliest_timestamp_disk = 0.0;
+	get_db_info(true, NULL, &earliest_timestamp_disk);
+	JSON_ADD_NUMBER_TO_OBJECT(json, "earliest_timestamp_disk", earliest_timestamp_disk);
+
 	// Finalize statements
 	sqlite3_finalize(read_stmt);
 

@@ -25,7 +25,7 @@
 #include <time.h>
 // errno
 #include <errno.h>
-// PRIi64
+// PRId64
 #include <inttypes.h>
 // config struct
 #include "config/config.h"
@@ -741,8 +741,8 @@ static void *ntp_client_thread(void *arg)
 				// Reduce retry time if the time is not accurate enough
 				if(retry_count++ < RETRY_ATTEMPTS &&
 				   sleep_time > RETRY_INTERVAL)
-					sleep_time = RETRY_INTERVAL;
-									log_info("Local time is too inaccurate, retrying in %u seconds before launching NTP server", sleep_time);
+				   sleep_time = RETRY_INTERVAL;
+					log_info("Local time is too inaccurate, retrying in %u seconds before launching NTP server", sleep_time);
 			}
 		}
 

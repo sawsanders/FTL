@@ -415,17 +415,17 @@ void FTL_log_helper(const unsigned int n, ...)
 	free(arg);
 }
 
-void format_memory_size(char prefix[2], const uint64_t bytes, double * const formatted)
+void format_memory_size(char prefix[2], const off_t bytes, double * const formatted)
 {
 	unsigned int i;
 	*formatted = bytes;
 	// Determine exponent for human-readable display
-	const char prefixes[] = { '\0', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y', 'R', '?' };
+	const char prefixes[] = { '\0', 'k', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y', 'R', '?' };
 	for(i = 0; i < sizeof(prefixes)/sizeof(*prefixes) - 1; i++)
 	{
-		if(*formatted <= 1e3)
+		if(*formatted <= 1024.0)
 			break;
-		*formatted /= 1e3;
+		*formatted /= 1024.0;
 	}
 	// Chose matching SI prefix
 	prefix[0] = prefixes[i];
@@ -762,6 +762,8 @@ void add_to_fifo_buffer(const enum fifo_logs which, const char *payload, const c
 
 bool flush_dnsmasq_log(void)
 {
+	const double mintime = double_time();
+
 	// Lock shared memory
 	lock_shm();
 
@@ -786,7 +788,6 @@ bool flush_dnsmasq_log(void)
 	unlock_shm();
 
 	// Flush last 24 hours of on-disk database
-	const double mintime = double_time();
 	if(!delete_old_queries_from_db(false, mintime))
 	{
 		log_err("Could not flush on-disk database");

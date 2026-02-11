@@ -589,7 +589,6 @@ int api_queries(struct ftl_conn *api)
 			filtering = true;
 			if((rc = sqlite3_bind_double(read_stmt, idx, timestamp_from)) != SQLITE_OK)
 			{
-				sqlite3_reset(read_stmt);
 				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 500,
 				                       "internal_error",
@@ -604,7 +603,6 @@ int api_queries(struct ftl_conn *api)
 			filtering = true;
 			if((rc = sqlite3_bind_double(read_stmt, idx, timestamp_until)) != SQLITE_OK)
 			{
-				sqlite3_reset(read_stmt);
 				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 500,
 				                       "internal_error",
@@ -619,7 +617,6 @@ int api_queries(struct ftl_conn *api)
 			filtering = true;
 			if((rc = sqlite3_bind_text(read_stmt, idx, domainname, -1, SQLITE_STATIC)) != SQLITE_OK)
 			{
-				sqlite3_reset(read_stmt);
 				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 500,
 				                       "internal_error",
@@ -634,7 +631,6 @@ int api_queries(struct ftl_conn *api)
 			filtering = true;
 			if((rc = sqlite3_bind_text(read_stmt, idx, clientip, -1, SQLITE_STATIC)) != SQLITE_OK)
 			{
-				sqlite3_reset(read_stmt);
 				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 500,
 				                       "internal_error",
@@ -649,7 +645,6 @@ int api_queries(struct ftl_conn *api)
 			filtering = true;
 			if((rc = sqlite3_bind_text(read_stmt, idx, clientname, -1, SQLITE_STATIC)) != SQLITE_OK)
 			{
-				sqlite3_reset(read_stmt);
 				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 500,
 				                       "internal_error",
@@ -664,7 +659,6 @@ int api_queries(struct ftl_conn *api)
 			filtering = true;
 			if((rc = sqlite3_bind_text(read_stmt, idx, upstreamname, -1, SQLITE_STATIC)) != SQLITE_OK)
 			{
-				sqlite3_reset(read_stmt);
 				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 500,
 				                       "internal_error",
@@ -688,7 +682,6 @@ int api_queries(struct ftl_conn *api)
 				rc = sqlite3_bind_int(read_stmt, idx, type);
 				if(rc != SQLITE_OK)
 				{
-					sqlite3_reset(read_stmt);
 					sqlite3_finalize(read_stmt);
 					return send_json_error(api, 500,
 					                       "internal_error",
@@ -698,6 +691,7 @@ int api_queries(struct ftl_conn *api)
 			}
 			else
 			{
+				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 400,
 				                       "bad_request",
 				                       "Requested type is invalid",
@@ -720,7 +714,6 @@ int api_queries(struct ftl_conn *api)
 				rc = sqlite3_bind_int(read_stmt, idx, status);
 				if(rc != SQLITE_OK)
 				{
-					sqlite3_reset(read_stmt);
 					sqlite3_finalize(read_stmt);
 					return send_json_error(api, 500,
 					                       "internal_error",
@@ -730,6 +723,7 @@ int api_queries(struct ftl_conn *api)
 			}
 			else
 			{
+				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 400,
 				                       "bad_request",
 				                       "Requested status is invalid",
@@ -752,7 +746,6 @@ int api_queries(struct ftl_conn *api)
 				rc = sqlite3_bind_int(read_stmt, idx, reply);
 				if(rc != SQLITE_OK)
 				{
-					sqlite3_reset(read_stmt);
 					sqlite3_finalize(read_stmt);
 					return send_json_error(api, 500,
 					                       "internal_error",
@@ -762,6 +755,7 @@ int api_queries(struct ftl_conn *api)
 			}
 			else
 			{
+				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 400,
 				                       "bad_request",
 				                       "Requested reply is invalid",
@@ -784,7 +778,6 @@ int api_queries(struct ftl_conn *api)
 				rc = sqlite3_bind_int(read_stmt, idx, dnssec);
 				if(rc != SQLITE_OK)
 				{
-					sqlite3_reset(read_stmt);
 					sqlite3_finalize(read_stmt);
 					return send_json_error(api, 500,
 					                       "internal_error",
@@ -794,6 +787,7 @@ int api_queries(struct ftl_conn *api)
 			}
 			else
 			{
+				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 400,
 				                       "bad_request",
 				                       "Requested dnssec is invalid",
@@ -808,7 +802,6 @@ int api_queries(struct ftl_conn *api)
 			rc = sqlite3_bind_int64(read_stmt, idx, cursor);
 			if(rc != SQLITE_OK)
 			{
-				sqlite3_reset(read_stmt);
 				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 500,
 				                       "internal_error",
@@ -823,7 +816,6 @@ int api_queries(struct ftl_conn *api)
 			filtering = true;
 			if((rc = sqlite3_bind_text(read_stmt, idx, search[0], -1, SQLITE_STATIC)) != SQLITE_OK)
 			{
-				sqlite3_reset(read_stmt);
 				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 500,
 				                       "internal_error",
@@ -838,7 +830,6 @@ int api_queries(struct ftl_conn *api)
 			filtering = true;
 			if((rc = sqlite3_bind_text(read_stmt, idx, search[1], -1, SQLITE_STATIC)) != SQLITE_OK)
 			{
-				sqlite3_reset(read_stmt);
 				sqlite3_finalize(read_stmt);
 				return send_json_error(api, 500,
 				                       "internal_error",

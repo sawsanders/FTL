@@ -50,7 +50,7 @@ typedef struct {
 		bool response_calculated :1;
 		struct database_flags {
 			bool changed :1;
-			bool stored :1;
+			bool imported :1;
 		} database;
 	} flags;
 } queriesData;

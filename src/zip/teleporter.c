@@ -499,12 +499,12 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 	}
 
 	// End transaction
-	if(sqlite3_exec(database, "END TRANSACTION;", NULL, NULL, &err) != SQLITE_OK)
+	if(sqlite3_exec(database, "END", NULL, NULL, &err) != SQLITE_OK)
 	{
 		strncpy(hint, err, ERRBUF_SIZE);
 		sqlite3_free(err);
 		sqlite3_close(database);
-		return "Failed to end transaction";
+		return "Failed to commit transaction";
 	}
 
 	// Detach the database file from the in-memory database

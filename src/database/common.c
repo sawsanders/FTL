@@ -18,7 +18,6 @@
 #include "timers.h"
 // file_exists()
 #include "files.h"
-#include "database/sqlite3-ext.h"
 // import_aliasclients()
 #include "database/aliasclients.h"
 // CREATE_QUERIES_TABLE
@@ -219,7 +218,6 @@ int dbquery(sqlite3* db, const char *format, ...)
 
 	log_debug(DEBUG_DATABASE, "dbquery: \"%s\"", query);
 
-
 	int rc = sqlite3_exec(db, query, NULL, NULL, NULL);
 	if( rc != SQLITE_OK ){
 		log_err("ERROR: SQL query \"%s\" failed: %s (%s)",
@@ -241,7 +239,7 @@ int dbquery(sqlite3* db, const char *format, ...)
 static bool create_counter_table(sqlite3* db)
 {
 	// Start transaction
-	SQL_bool(db, "BEGIN TRANSACTION");
+	SQL_bool(db, "BEGIN");
 
 	// Create FTL table in the database (holds properties like database version, etc.)
 	SQL_bool(db, "CREATE TABLE counters ( id INTEGER PRIMARY KEY NOT NULL, value INTEGER NOT NULL );");
@@ -274,7 +272,7 @@ static bool create_counter_table(sqlite3* db)
 		return false;
 	}
 	// End transaction
-	SQL_bool(db, "COMMIT");
+	SQL_bool(db, "END");
 
 	return true;
 }
@@ -336,16 +334,6 @@ void SQLite3LogCallback(void *pArg, int iErrCode, const char *zMsg)
 
 void db_init(void)
 {
-	// Initialize SQLite3 logging callback
-	// This ensures SQLite3 errors and warnings are logged to FTL.log
-	// We use this to possibly catch even more errors in places we do not
-	// explicitly check for failures to have happened
-	sqlite3_config(SQLITE_CONFIG_LOG, SQLite3LogCallback, NULL);
-
-	// Register Pi-hole provided SQLite3 extensions (see sqlite3-ext.c) and
-	// initialize SQLite3 engine
-	pihole_sqlite3_initalize();
-
 	// Check if database exists, if not create empty database
 	if(!file_exists(config.files.database.v.s))
 	{
@@ -865,7 +853,7 @@ bool db_update_disk_counter(sqlite3 *db, const enum counters_table_props ID, con
 
 int db_query_int(sqlite3 *db, const char* querystr)
 {
-	log_debug(DEBUG_DATABASE, "dbquery: \"%s\"", querystr);
+	log_debug(DEBUG_DATABASE, "dbquery_int: \"%s\"", querystr);
 
 	sqlite3_stmt* stmt;
 	int rc = sqlite3_prepare_v2(db, querystr, -1, &stmt, NULL);
@@ -950,7 +938,7 @@ int db_query_int_int(sqlite3 *db, const char* querystr, const int arg)
 
 int db_query_int_str(sqlite3 *db, const char* querystr, const char *arg)
 {
-	log_debug(DEBUG_DATABASE, "db_query_int_str: \"%s\"", querystr);
+	log_debug(DEBUG_DATABASE, "db_query_int_str: \"%s\" with \"%s\"", querystr, arg);
 
 	sqlite3_stmt* stmt;
 	int rc = sqlite3_prepare_v2(db, querystr, -1, &stmt, NULL);
@@ -996,7 +984,7 @@ int db_query_int_str(sqlite3 *db, const char* querystr, const char *arg)
 
 double db_query_double(sqlite3 *db, const char* querystr)
 {
-	log_debug(DEBUG_DATABASE, "dbquery: \"%s\"", querystr);
+	log_debug(DEBUG_DATABASE, "dbquery_double: \"%s\"", querystr);
 
 	sqlite3_stmt* stmt = NULL;
 	int rc = sqlite3_prepare_v2(db, querystr, -1, &stmt, NULL);
@@ -1039,6 +1027,8 @@ double db_query_double(sqlite3 *db, const char* querystr)
 
 int db_query_int_from_until(sqlite3 *db, const char* querystr, const double from, const double until)
 {
+	log_debug(DEBUG_DATABASE, "db_query_int_from_until: \"%s\" (from: %f, until: %f)", querystr, from, until);
+
 	sqlite3_stmt* stmt;
 	int rc = sqlite3_prepare_v2(db, querystr, -1, &stmt, NULL);
 	if( rc != SQLITE_OK ){
@@ -1081,6 +1071,8 @@ int db_query_int_from_until(sqlite3 *db, const char* querystr, const double from
 
 int db_query_int_from_until_type(sqlite3 *db, const char* querystr, const double from, const double until, const int type)
 {
+	log_debug(DEBUG_DATABASE, "db_query_int_from_until_type: \"%s\" (from: %f, until: %f, type: %d)", querystr, from, until, type);
+
 	sqlite3_stmt* stmt;
 	int rc = sqlite3_prepare_v2(db, querystr, -1, &stmt, NULL);
 	if( rc != SQLITE_OK ){

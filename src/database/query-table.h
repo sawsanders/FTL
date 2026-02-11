@@ -108,7 +108,8 @@ const char *index_creation[] = {
 sqlite3_int64 get_max_db_idx(void) __attribute__((pure));
 void db_counts(sqlite3_int64 *last_idx, sqlite3_int64 *mem_num, sqlite3_int64 *disk_num);
 bool init_memory_database(void);
-sqlite3 *get_memdb(void) __attribute__((pure));
+sqlite3 *_get_memdb(const int line, const char *func, const char *file) __attribute__((pure));
+#define get_memdb(void) _get_memdb(__LINE__, __FUNCTION__, __FILE__)
 void close_memory_database(void);
 bool import_queries_from_disk(void);
 bool attach_database(sqlite3* db, const char **message, const char *path, const char *alias);
@@ -118,7 +119,6 @@ bool export_queries_to_disk(const bool final);
 bool delete_old_queries_from_db(const bool use_memdb, const double mintime);
 bool add_additional_info_column(sqlite3 *db);
 void DB_read_queries(void);
-void init_disk_db_idx(void);
 bool queries_to_database(void);
 bool get_memdb_size(size_t *memsize, int *queries);
 

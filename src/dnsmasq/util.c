@@ -270,6 +270,10 @@ char *canonicalise(char *in, int *nomem)
 	  
 	  return NULL;
 	}
+
+      /* IDN library doesnt call our malloc wrapper, so log this by steam */
+      if (ret)
+	malloc_log(ret, strlen(ret)+1);
       
       return ret;
     }
@@ -1000,6 +1004,12 @@ int expand_workspace_real(const char *func, unsigned int line, unsigned char ***
   *szp = new;
 
   return 1;
+}
+
+void malloc_log_real(const char *func, unsigned int line, void *mem, size_t size)
+{
+  if (mem && daemon->log_malloc)
+    my_syslog(LOG_INFO, _("malloc: %s:%u %zu bytes at %x"), func, line, size, hash_ptr(mem));
 }
 
 #undef free

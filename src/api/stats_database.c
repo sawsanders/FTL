@@ -67,7 +67,6 @@ int api_history_database(struct ftl_conn *api)
 	{
 		log_err("api_stats_database_history(): Failed to bind interval (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
 		sqlite3_finalize(stmt);
 		dbclose(&db);
 
@@ -82,7 +81,6 @@ int api_history_database(struct ftl_conn *api)
 	{
 		log_err("api_stats_database_history(): Failed to bind from (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
 		sqlite3_finalize(stmt);
 		dbclose(&db);
 
@@ -97,7 +95,6 @@ int api_history_database(struct ftl_conn *api)
 	{
 		log_err("api_stats_database_history(): Failed to bind until (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
 		sqlite3_finalize(stmt);
 		dbclose(&db);
 
@@ -305,7 +302,6 @@ int api_stats_database_top_items(struct ftl_conn *api)
 	{
 		log_err("api_stats_database_history(): Failed to bind from (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
 		sqlite3_finalize(stmt);
 		dbclose(&db);
 
@@ -320,7 +316,6 @@ int api_stats_database_top_items(struct ftl_conn *api)
 	{
 		log_err("api_stats_database_history(): Failed to bind until (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
 		sqlite3_finalize(stmt);
 		dbclose(&db);
 
@@ -491,7 +486,6 @@ int api_history_database_clients(struct ftl_conn *api)
 	{
 		log_err("api_stats_database_clients(): Failed to bind from (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
 		sqlite3_finalize(stmt);
 		dbclose(&db);
 
@@ -506,7 +500,6 @@ int api_history_database_clients(struct ftl_conn *api)
 	{
 		log_err("api_stats_database_clients(): Failed to bind until (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
 		sqlite3_finalize(stmt);
 		dbclose(&db);
 
@@ -548,7 +541,6 @@ int api_history_database_clients(struct ftl_conn *api)
 	{
 		log_err("api_stats_database_clients(): Failed to bind interval (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
 		sqlite3_finalize(stmt);
 		dbclose(&db);
 
@@ -563,7 +555,6 @@ int api_history_database_clients(struct ftl_conn *api)
 	{
 		log_err("api_stats_database_clients(): Failed to bind from (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
 		sqlite3_finalize(stmt);
 		dbclose(&db);
 
@@ -578,7 +569,6 @@ int api_history_database_clients(struct ftl_conn *api)
 	{
 		log_err("api_stats_database_clients(): Failed to bind until (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
 		sqlite3_finalize(stmt);
 		dbclose(&db);
 
@@ -748,7 +738,6 @@ int api_stats_database_upstreams(struct ftl_conn *api)
 	{
 		log_err("api_stats_database_clients(): Failed to bind from (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
 		sqlite3_finalize(stmt);
 		dbclose(&db);
 
@@ -763,7 +752,6 @@ int api_stats_database_upstreams(struct ftl_conn *api)
 	{
 		log_err("api_stats_database_clients(): Failed to bind until (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
-		sqlite3_reset(stmt);
 		sqlite3_finalize(stmt);
 		dbclose(&db);
 

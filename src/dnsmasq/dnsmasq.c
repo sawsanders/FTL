@@ -873,6 +873,9 @@ int main_dnsmasq (int argc, char **argv)
     }
 #endif
 
+   /* Don't start logging malloc before logging is set up. */
+  daemon->log_malloc = option_bool(OPT_LOG_MALLOC);
+  
   if (daemon->port == 0)
     my_syslog(LOG_INFO, _("started, version %s DNS disabled"), VERSION);
   else 
@@ -1349,17 +1352,53 @@ static void sig_handler(int sig)
       if (sig == SIGTERM || sig == SIGINT)
 	exit(EC_MISC);
     }
-  else if (pid != getpid())
+  else if (daemon->pipe_to_parent != -1)
     {
       /* alarm is used to kill TCP children after a fixed time. */
       if (sig == SIGALRM)
-        {
-	  /*** Pi-hole modification ***/
-	  // TCP workers ignore all signals except SIGALRM
-	  FTL_TCP_worker_terminating(false);
-	  /*** Pi-hole modification ***/
-	  _exit(0);
-        }
+	{
+#ifdef HAVE_DNSSEC
+	  if (!daemon->forward_to_tcp)
+#endif
+	  {
+	    /*** Pi-hole modification ***/
+	    // TCP workers ignore all signals except SIGALRM
+	    FTL_TCP_worker_terminating(false);
+	    /****************************/
+	    _exit(0); /* Normal TCP child */
+	  }
+#ifdef HAVE_DNSSEC
+	  else
+	    {
+	      /* udp_to_tcp transfer.
+		 If daemon->header_to_tcp is NULL the waiting is over and
+		 we can let things take their course, otherwise, send a failure
+		 return down the pipe to unblock the UDP transaction and kill
+		 the process. */
+	      if (daemon->header_to_tcp)
+		{
+		  unsigned char op = PIPE_OP_KILLED;
+		  int status = STAT_ABANDONED;
+		  
+		  read_write(daemon->pipe_to_parent, &op, sizeof(op), RW_WRITE);
+		  read_write(daemon->pipe_to_parent, (unsigned char *)&status, sizeof(status), RW_WRITE);
+		  read_write(daemon->pipe_to_parent, (unsigned char *)(&daemon->plen_to_tcp), sizeof(daemon->plen_to_tcp), RW_WRITE);
+		  read_write(daemon->pipe_to_parent, (unsigned char *)(daemon->header_to_tcp), daemon->plen_to_tcp, RW_WRITE);
+		  read_write(daemon->pipe_to_parent, (unsigned char *)(&daemon->forward_to_tcp), sizeof(daemon->forward_to_tcp), RW_WRITE);
+		  read_write(daemon->pipe_to_parent, (unsigned char *)(&daemon->forward_to_tcp->uid), sizeof(daemon->forward_to_tcp->uid), RW_WRITE);
+
+		  my_syslog(LOG_INFO, _("TCP process for DNSSEC validation timed out"));
+
+		  /*** Pi-hole modification ***/
+		  // TCP workers ignore all signals except SIGALRM
+		  FTL_TCP_worker_terminating(false);
+		  /****************************/
+
+		  _exit(0);
+		}
+	    }
+#endif
+	}
     }
   else
     {
@@ -1436,8 +1475,6 @@ void send_event(int fd, int event, int data, char *msg)
     while (writev(fd, iov, msg ? 2 : 1) == -1 && errno == EINTR);
 }
 
-/* NOTE: the memory used to return msg is leaked: use msgs in events only
-   to describe fatal errors. */
 static int read_event(int fd, struct event_desc *evp, char **msg)
 {
   char *buf;
@@ -1447,12 +1484,22 @@ static int read_event(int fd, struct event_desc *evp, char **msg)
   
   *msg = NULL;
   
-  if (evp->msg_sz != 0 && 
-      (buf = malloc(evp->msg_sz + 1)) &&
-      read_write(fd, (unsigned char *)buf, evp->msg_sz, RW_READ))
+  if (evp->msg_sz != 0)
     {
-      buf[evp->msg_sz] = 0;
-      *msg = buf;
+      if (!(buf = whine_malloc(evp->msg_sz + 1)))
+	{
+	  int i;
+	  unsigned char a;
+	  
+	  /* Keep the stream synchronised if malloc fails. */
+	  for (i = 0; i < evp->msg_sz; i++)
+	    read_write(fd, &a, 1, RW_READ);
+	}
+      else if (read_write(fd, (unsigned char *)buf, evp->msg_sz, RW_READ))
+	{
+	  buf[evp->msg_sz] = 0;
+	  *msg = buf;
+	}
     }
 
   return 1;
@@ -1514,9 +1561,6 @@ static void async_event(int pipe, time_t now)
   struct event_desc ev;
   int wstatus, i, check = 0;
   char *msg;
-  
-  /* NOTE: the memory used to return msg is leaked: use msgs in events only
-     to describe fatal errors. */
   
   if (read_event(pipe, &ev, &msg))
     switch (ev.event)
@@ -1629,7 +1673,6 @@ static void async_event(int pipe, time_t now)
       case EVENT_SCRIPT_LOG:
 	my_syslog(MS_SCRIPT | LOG_DEBUG, "%s", msg ? msg : "");
         free(msg);
-	msg = NULL;
 	break;
 
 	/* necessary for fatal errors in helper */
@@ -1973,20 +2016,21 @@ static void check_dns_listeners(time_t now)
 
 static void do_tcp_connection(struct listener *listener, time_t now, int slot)
 {
-  int confd, client_ok = 1;
+  int confd;
   struct irec *iface = NULL;
   pid_t p;
   union mysockaddr tcp_addr;
   socklen_t tcp_len = sizeof(union mysockaddr);
-  unsigned char *buff;
   struct server *s; 
-  int flags, auth_dns;
+  int flags, auth_dns = 0;
   struct in_addr netmask;
   int pipefd[2];
+  struct iovec tcpbuff;
 #ifdef HAVE_LINUX_NETWORK
   unsigned char a = 0;
 #endif
-
+  netmask.s_addr = 0;
+  
   while ((confd = accept(listener->tcpfd, NULL, NULL)) == -1 && errno == EINTR);
   
   if (confd == -1)
@@ -2013,58 +2057,63 @@ static void do_tcp_connection(struct listener *listener, time_t now, int slot)
   
   enumerate_interfaces(0);
   
-  if (option_bool(OPT_NOWILD))
-    iface = listener->iface; /* May be NULL */
+  if (option_bool(OPT_NOWILD) || option_bool(OPT_CLEVERBIND))
+    {
+      if ((iface = listener->iface)) 
+	{
+	  netmask = iface->netmask;
+	  auth_dns = iface->dns_auth;
+	}
+    }
   else 
     {
-      int if_index;
+      int if_index, got_index = 0;
       char intr_name[IF_NAMESIZE];
       
-      /* if we can find the arrival interface, check it's one that's allowed */
+      /* if we can find the arrival interface, check it's one that's allowed
+	 tcp_interface() is not implemented on non-Linux platforms */
       if ((if_index = tcp_interface(confd, tcp_addr.sa.sa_family)) != 0 &&
 	  indextoname(listener->tcpfd, if_index, intr_name))
 	{
 	  union all_addr addr;
+
+	  got_index = 1;
 	  
 	  if (tcp_addr.sa.sa_family == AF_INET6)
 	    addr.addr6 = tcp_addr.in6.sin6_addr;
 	  else
 	    addr.addr4 = tcp_addr.in.sin_addr;
 	  
-	  for (iface = daemon->interfaces; iface; iface = iface->next)
-	    if (iface->index == if_index &&
-		iface->addr.sa.sa_family == tcp_addr.sa.sa_family)
-	      break;
-	  
-	  if (!iface && !loopback_exception(listener->tcpfd, tcp_addr.sa.sa_family, &addr, intr_name))
-	    client_ok = 0;
+	  if (!iface_check(tcp_addr.sa.sa_family, &addr, intr_name, &auth_dns) &&
+	      !loopback_exception(listener->tcpfd, tcp_addr.sa.sa_family, &addr, intr_name))
+	    goto closeconandreturn;
 	}
       
-      if (option_bool(OPT_CLEVERBIND))
-	iface = listener->iface; /* May be NULL */
-      else
+      /* When binding the wildcard address, try and get the
+	 netmask of the interface for localisation. */
+      for (iface = daemon->interfaces; iface; iface = iface->next)
+	if (sockaddr_isequal(&iface->addr, &tcp_addr))
+	  {
+	    netmask = iface->netmask;
+	    break;
+	  }
+
+      /* On platforms where tcp_interface() doesn't work, we rely
+	 of the presence of the local address of the connection in the
+	 interface list to check if we're accepting this connection and
+	 for its auth status. */
+      if (!got_index)
 	{
-	  /* Check for allowed interfaces when binding the wildcard address:
-	     we do this by looking for an interface with the same address as 
-	     the local address of the TCP connection, then looking to see if that's
-	     an allowed interface. As a side effect, we get the netmask of the
-	     interface too, for localisation. */
-	  
-	  for (iface = daemon->interfaces; iface; iface = iface->next)
-	    if (sockaddr_isequal(&iface->addr, &tcp_addr))
-	      break;
-	  
 	  if (!iface)
-	    client_ok = 0;
+	    goto closeconandreturn;
+
+	  auth_dns = iface->dns_auth;
 	}
     }
   
-  if (!client_ok)
-    goto closeconandreturn;
-  
   if (!option_bool(OPT_DEBUG))
     {
-      /* The code in edns0.c qthat decorates queries with the source MAC address depends
+      /* The code in edns0.c that decorates queries with the source MAC address depends
 	 on the code in arp.c, which populates a cache with the contents of the ARP table
 	 using netlink. Since the child process can't use netlink, we pre-populate
 	 the cache with the ARP table entry for our source here, including a negative entry
@@ -2132,23 +2181,9 @@ static void do_tcp_connection(struct listener *listener, time_t now, int slot)
 	  
 	  return;
 	}
-    }
-         
-  if (iface)
-    {
-      netmask = iface->netmask;
-      auth_dns = iface->dns_auth;
-    }
-  else
-    {
-      netmask.s_addr = 0;
-      auth_dns = 0;
-    }
-  
-  /* Arrange for SIGALRM after CHILD_LIFETIME seconds to
-     terminate the process. */
-  if (!option_bool(OPT_DEBUG))
-    {
+      
+      /* Arrange for SIGALRM after CHILD_LIFETIME seconds to
+	 terminate the process. */
 #ifdef HAVE_LINUX_NETWORK
       /* See comment above re: netlink socket. */
       close(daemon->netlinkfd);
@@ -2171,14 +2206,12 @@ static void do_tcp_connection(struct listener *listener, time_t now, int slot)
   FTL_iface(iface, NULL, 0);
   /**********************************************/
 
-  buff = tcp_request(confd, now, &tcp_addr, netmask, auth_dns);
 
   /************ Pi-hole modification ************/
   FTL_TCP_worker_terminating(true);
   /**********************************************/
-	      
-  if (buff)
-    free(buff);
+  tcp_request(confd, now, &tcpbuff, &tcp_addr, netmask, auth_dns);
+  free(tcpbuff.iov_base);
   
   for (s = daemon->servers; s; s = s->next)
     if (s->tcpfd != -1)
@@ -2284,8 +2317,12 @@ int swap_to_tcp(struct frec *forward, time_t now, int status, struct dns_header 
     // Pi-hole modification
     daemon->netlinkfd = -1;
 #endif		  
+	  alarm(CHILD_LIFETIME);
 	  close(pipefd[0]); /* close read end in child. */
-	  daemon->pipe_to_parent = pipefd[1];	  
+	  daemon->pipe_to_parent = pipefd[1];
+	  daemon->forward_to_tcp = forward;
+	  daemon->header_to_tcp = header;
+	  daemon->plen_to_tcp = *plen;
 	}
     }
   

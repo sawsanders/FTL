@@ -44,7 +44,7 @@
 #include <stddef.h>
 // logg_rate_limit_message()
 #include "database/message-table.h"
-// http_init()
+// http_init(), webserver_thread()
 #include "webserver/webserver.h"
 // type struct sqlite3_stmt_vec
 #include "vector.h"
@@ -3359,12 +3359,17 @@ void FTL_fork_and_bind_sockets(struct passwd *ent_pw, bool dnsmasq_start)
 		exit(EXIT_FAILURE);
 	}
 
+#ifdef HAVE_MBEDTLS
 	// Start webserver thread
 	if(pthread_create( &threads[WEBSERVER], &attr, webserver_thread, NULL ) != 0)
 	{
 		log_crit("Unable to create webserver thread. Exiting...");
 		exit(EXIT_FAILURE);
 	}
+#else
+	// Initialize FTL HTTP server
+	http_init();
+#endif /* HAVE_MBEDTLS */
 
 	// Chown files if FTL started as user root but a dnsmasq config
 	// option states to run as a different user/group (e.g. "nobody")

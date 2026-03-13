@@ -878,9 +878,6 @@ void http_init(void)
 	// Prepare prerequisites for Lua
 	allocate_lua(login_uri, admin_api_uri, prefix_webhome);
 
-	// Restore sessions from database
-	init_api();
-
 	// Create CLI password (if enabled)
 	create_cli_password();
 }

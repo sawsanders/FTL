@@ -18,7 +18,7 @@ import dns.rcode
 
 # Get the protocol, server, and port from command line arguments or use defaults
 proto = sys.argv[1] if len(sys.argv) > 1 else 'tcp'
-port = int(sys.argv[2]) if len(sys.argv) > 2 else 5300
+port = int(sys.argv[2]) if len(sys.argv) > 2 else 53
 server = sys.argv[3] if len(sys.argv) > 3 else '127.0.0.1'
 
 # Create a new update object

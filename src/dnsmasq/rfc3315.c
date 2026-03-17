@@ -1991,8 +1991,8 @@ static void update_leases(struct state *state, struct dhcp_context *context, str
 	  if ((opt = opt6_find(state->packet_options, state->end, OPTION6_USER_CLASS, 2)))
 	    {
 	      void *enc_opt, *enc_end = opt6_ptr(opt, opt6_len(opt));
-	      for (enc_opt = opt6_ptr(opt, 0); enc_opt; enc_opt = opt6_next(enc_opt, enc_end))
-		lease_add_extradata(lease, opt6_ptr(enc_opt, 0), opt6_len(enc_opt), 0);
+	      for (enc_opt = opt6_ptr(opt, 0); enc_opt; enc_opt = opt6_user_vendor_next(enc_opt, enc_end))
+		lease_add_extradata(lease, opt6_user_vendor_ptr(enc_opt, 0), opt6_user_vendor_len(enc_opt), 0);
 	    }
 	}
 #endif	

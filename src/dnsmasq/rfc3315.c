@@ -21,7 +21,7 @@
 
 struct state {
   unsigned char *clid;
-  int clid_len, ia_type, interface, hostname_auth, lease_allocate;
+  int multicast_dest, clid_len, ia_type, interface, hostname_auth, lease_allocate;
   char *client_hostname, *hostname, *domain, *send_domain;
   struct dhcp_context *context;
   struct in6_addr *link_address, *fallback, *ll_addr, *ula_addr;
@@ -34,13 +34,12 @@ struct state {
 };
 
 static int dhcp6_maybe_relay(struct state *state, unsigned char *inbuff, size_t sz, 
-			     struct in6_addr *client_addr, time_t now);
-static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbuff, size_t sz, time_t now);
+			     struct in6_addr *client_addr, int is_unicast, time_t now);
+static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbuff, size_t sz, int is_unicast, time_t now);
 static void log6_opts(int nest, unsigned int xid, void *start_opts, void *end_opts);
 static void log6_packet(struct state *state, char *type, struct in6_addr *addr, char *string);
 static void log6_quiet(struct state *state, char *type, struct in6_addr *addr, char *string);
 static void *opt6_find (uint8_t *opts, uint8_t *end, unsigned int search, unsigned int minsize);
-static void *opt6_first(uint8_t *opt, uint8_t *end);
 static void *opt6_next(uint8_t *opts, uint8_t *end);
 static unsigned int opt6_uint(unsigned char *opt, int offset, int size);
 static void get_context_tag(struct state *state, struct dhcp_context *context);
@@ -81,10 +80,6 @@ unsigned short dhcp6_reply(struct dhcp_context *context, int multicast_dest, int
     return 0;
   
   msg_type = *((unsigned char *)daemon->dhcp_packet.iov_base);
-
-  /* request from a client must be multicast RFC-9915 section 16 */
-  if (msg_type != DHCP6RELAYFORW && !multicast_dest)
-    return 0;
   
   /* Mark these so we only match each at most once, to avoid tangled linked lists */
   for (vendor = daemon->dhcp_vendors; vendor; vendor = vendor->next)
@@ -92,6 +87,7 @@ unsigned short dhcp6_reply(struct dhcp_context *context, int multicast_dest, int
   
   reset_counter();
   state.context = context;
+  state.multicast_dest = multicast_dest;
   state.interface = interface;
   state.iface_name = iface_name;
   state.fallback = fallback;
@@ -101,7 +97,8 @@ unsigned short dhcp6_reply(struct dhcp_context *context, int multicast_dest, int
   state.tags = NULL;
   state.link_address = NULL;
 
-  if (dhcp6_maybe_relay(&state, daemon->dhcp_packet.iov_base, sz, client_addr, now))
+  if (dhcp6_maybe_relay(&state, daemon->dhcp_packet.iov_base, sz, client_addr, 
+			IN6_IS_ADDR_MULTICAST(client_addr), now))
     return msg_type == DHCP6RELAYFORW ? DHCPV6_SERVER_PORT : DHCPV6_CLIENT_PORT;
 
   return 0;
@@ -109,21 +106,14 @@ unsigned short dhcp6_reply(struct dhcp_context *context, int multicast_dest, int
 
 /* This cost me blood to write, it will probably cost you blood to understand - srk. */
 static int dhcp6_maybe_relay(struct state *state, unsigned char *inbuff, size_t sz, 
-			     struct in6_addr *client_addr, time_t now)
+			     struct in6_addr *client_addr, int is_unicast, time_t now)
 {
   uint8_t *end = inbuff + sz;
   uint8_t *opts = inbuff + 34;
-  int msg_type;
+  int msg_type = *inbuff;
   unsigned char *outmsgtypep;
   uint8_t *opt;
   struct dhcp_vendor *vendor;
-
-  /* must have at least msg_type+trans_id
-     which is               1   +   3      = 4 */
-  if (sz < 4)
-    return 0;
-
-  msg_type = *inbuff;
 
   /* if not an encapsulated relayed message, just do the stuff */
   if (msg_type != DHCP6RELAYFORW)
@@ -194,7 +184,7 @@ static int dhcp6_maybe_relay(struct state *state, unsigned char *inbuff, size_t 
 	  return 0;
 	}
 
-      return dhcp6_no_relay(state, msg_type, inbuff, sz, now);
+      return dhcp6_no_relay(state, msg_type, inbuff, sz, is_unicast, now);
     }
 
   /* must have at least msg_type+hopcount+link_address+peer_address+minimal size option
@@ -241,8 +231,11 @@ static int dhcp6_maybe_relay(struct state *state, unsigned char *inbuff, size_t 
       memcpy(&state->mac[0], opt6_ptr(opt, 2), state->mac_len);
     }
   
-  for (opt = opt6_first(opts, end); opt; opt = opt6_next(opt, end))
+  for (opt = opts; opt; opt = opt6_next(opt, end))
     {
+      if ((uint8_t *)opt6_ptr(opt, 0) + opt6_len(opt) > end)
+        return 0;
+     
       /* Don't copy MAC address into reply. */
       if (opt6_type(opt) != OPTION6_CLIENT_MAC)
 	{
@@ -257,7 +250,9 @@ static int dhcp6_maybe_relay(struct state *state, unsigned char *inbuff, size_t 
 	      /* RFC6221 para 4 */
 	      if (!IN6_IS_ADDR_UNSPECIFIED(&align))
 		state->link_address = &align;
-	      if (!dhcp6_maybe_relay(state, opt6_ptr(opt, 0), opt6_len(opt), client_addr, now))
+	      /* zero is_unicast since that is now known to refer to the 
+		 relayed packet, not the original sent by the client */
+	      if (!dhcp6_maybe_relay(state, opt6_ptr(opt, 0), opt6_len(opt), client_addr, 0, now))
 		return 0;
 	    }
 	  else
@@ -269,7 +264,7 @@ static int dhcp6_maybe_relay(struct state *state, unsigned char *inbuff, size_t 
   return 1;
 }
 
-static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbuff, size_t sz, time_t now)
+static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbuff, size_t sz, int is_unicast, time_t now)
 {
   void *opt;
   int i, o, o1, start_opts, start_msg;
@@ -295,7 +290,7 @@ static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbu
   state->hostname = NULL;
   state->client_hostname = NULL;
   state->fqdn_flags = 0x01; /* default to send if we receive no FQDN option */
-  
+
   /* set tag with name == interface */
   iface_id.net = state->iface_name;
   iface_id.next = state->tags;
@@ -345,17 +340,22 @@ static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbu
 
   opt = opt6_find(state->packet_options, state->end, OPTION6_SERVER_ID, 1);
   
-  if (msg_type == DHCP6SOLICIT || msg_type == DHCP6CONFIRM || msg_type == DHCP6REBIND)
+  if (msg_type == DHCP6SOLICIT || msg_type == DHCP6CONFIRM || msg_type == DHCP6REBIND || msg_type == DHCP6IREQ)
     {
-      /* SOLICIT, CONFIRM and REBIND messages MUST NOT have a server-id.  3315 para 15.x */
-      if (opt) 
+      /* Above message types must be multicast 3315 Section 15. */
+      if (!state->multicast_dest)
 	return 0;
-    }
-  else if (msg_type == DHCP6IREQ)
-    {
-      /* If server-id provided in IREQ, it must match. */
-      if (opt && (opt6_len(opt) != daemon->duid_len ||
-		  memcmp(opt6_ptr(opt, 0), daemon->duid, daemon->duid_len) != 0))
+
+      /* server-id must match except for SOLICIT, CONFIRM and REBIND messages, which MUST NOT
+	 have a server-id.  3315 para 15.x */
+      if (msg_type == DHCP6IREQ)
+	{
+	  /* If server-id provided in IREQ, it must match. */
+	  if (opt && (opt6_len(opt) != daemon->duid_len ||
+		      memcmp(opt6_ptr(opt, 0), daemon->duid, daemon->duid_len) != 0))
+	    return 0;
+	}
+      else if (opt) 
 	return 0;
     }
   else
@@ -369,6 +369,18 @@ static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbu
   o = new_opt6(OPTION6_SERVER_ID);
   put_opt6(daemon->duid, daemon->duid_len);
   end_opt6(o);
+
+  if (is_unicast &&
+      (msg_type == DHCP6REQUEST || msg_type == DHCP6RENEW || msg_type == DHCP6RELEASE || msg_type == DHCP6DECLINE))
+    
+    {  
+      outmsgtype = DHCP6REPLY;
+      o1 = new_opt6(OPTION6_STATUS_CODE);
+      put_opt6_short(DHCP6USEMULTI);
+      put_opt6_string("Use multicast");
+      end_opt6(o1);
+      goto done;
+    }
 
   /* match vendor and user class options */
   for (vendor = daemon->dhcp_vendors; vendor; vendor = vendor->next)
@@ -1292,6 +1304,7 @@ static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbu
 
   log_tags(tagif, state->xid);
 
+ done:
   /* Fill in the message type. Note that we store the offset,
      not a direct pointer, since the packet memory may have been 
      reallocated. */
@@ -1583,14 +1596,9 @@ static void get_context_tag(struct state *state, struct dhcp_context *context)
 
 static int check_ia(struct state *state, void *opt, void **endp, void **ia_option)
 {
+  state->ia_type = opt6_type(opt);
   *ia_option = NULL;
 
-  /* must be a minimal option to check without stepping outside received packet. */
-  if (opt6_ptr(opt, 4) > state->end)
-    return 0;
-  
-  state->ia_type = opt6_type(opt);
-  
   if (state->ia_type != OPTION6_IA_NA && state->ia_type != OPTION6_IA_TA)
     return 0;
   
@@ -1600,10 +1608,7 @@ static int check_ia(struct state *state, void *opt, void **endp, void **ia_optio
   if (state->ia_type == OPTION6_IA_TA && opt6_len(opt) < 4)
     return 0;
   
-  /* Check we don't overflow the received packet. */
-  if ((*endp = opt6_ptr(opt, opt6_len(opt))) > state->end)
-    return 0;
-  
+  *endp = opt6_ptr(opt, opt6_len(opt));
   state->iaid = opt6_uint(opt, 0, 4);
   *ia_option = opt6_find(opt6_ptr(opt, state->ia_type == OPTION6_IA_NA ? 12 : 4), *endp, OPTION6_IAADDR, 24);
 
@@ -2118,19 +2123,6 @@ static void *opt6_find (uint8_t *opts, uint8_t *end, unsigned int search, unsign
     }
 }
 
-static void *opt6_first(uint8_t *opt, uint8_t *end)
-{
-  /* make sure we have option number and length. */
-  if ((uint8_t *)opt6_ptr(opt, 0) > end)
-    return NULL;
-
-  /* make sure we have bytes promised by length. */
-  if ((uint8_t *)opt6_ptr(opt, opt6_len(opt)) > end)
-    return NULL;
-
-  return opt;
-}
-  
 static void *opt6_next(uint8_t *opts, uint8_t *end)
 {
   u16 opt_len;

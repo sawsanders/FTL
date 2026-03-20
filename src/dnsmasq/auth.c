@@ -591,7 +591,7 @@ size_t answer_auth(struct dns_header *header, char *limit, size_t qlen, time_t n
   if (auth && zone)
     {
       char *authname;
-      int newoffset = ansp - (unsigned char *)header, offset = 0;
+      int newoffset, offset = 0;
 
       if (!subnet)
 	authname = zone->domain;
@@ -631,7 +631,8 @@ size_t answer_auth(struct dns_header *header, char *limit, size_t qlen, time_t n
 	}
       
       /* handle NS and SOA in auth section or for explicit queries */
-      if (((anscount == 0 && !ns) || soa) &&
+       newoffset = ansp - (unsigned char *)header;
+       if (((anscount == 0 && !ns) || soa) &&
 	  add_resource_record(header, limit, &trunc, 0, &ansp, 
 			      daemon->auth_ttl, NULL, T_SOA, C_IN, "ddlllll",
 			      authname, daemon->authserver,  daemon->hostmaster,
@@ -649,10 +650,11 @@ size_t answer_auth(struct dns_header *header, char *limit, size_t qlen, time_t n
       if (anscount != 0 || ns)
 	{
 	  struct name_list *secondary;
-	 	  
+	  
 	  /* Only include the machine running dnsmasq if it's acting as an auth server */
 	  if (daemon->authinterface)
 	    {
+	      newoffset = ansp - (unsigned char *)header;
 	      if (add_resource_record(header, limit, &trunc, -offset, &ansp, 
 				      daemon->auth_ttl, NULL, T_NS, C_IN, "d", offset == 0 ? authname : NULL, daemon->authserver))
 		{
@@ -667,11 +669,9 @@ size_t answer_auth(struct dns_header *header, char *limit, size_t qlen, time_t n
 
 	  if (!subnet)
 	    for (secondary = daemon->secondary_forward_server; secondary; secondary = secondary->next)
-	      if (add_resource_record(header, limit, &trunc, -offset, &ansp, 
-				      daemon->auth_ttl, NULL, T_NS, C_IN, "d", offset == 0 ? authname : NULL, secondary->name))
+	      if (add_resource_record(header, limit, &trunc, offset, &ansp, 
+				      daemon->auth_ttl, NULL, T_NS, C_IN, "d", secondary->name))
 		{
-		  if (offset == 0) 
-		    offset = newoffset;
 		  if (ns) 
 		    anscount++;
 		  else

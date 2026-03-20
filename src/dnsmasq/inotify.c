@@ -40,7 +40,7 @@ static char *inotify_buffer;
    points to, made absolute if relative.
    If path doesn't exist or is not a symlink, return NULL.
    Return value is malloc'ed */
-static char *my_readlink(int errfd, char *path)
+static char *my_readlink(char *path)
 {
   ssize_t rc, size = 64;
   char *buf;
@@ -59,10 +59,7 @@ static char *my_readlink(int errfd, char *path)
 	      return NULL;
 	    }
 	  else
-	    {
-	      send_event(errfd, EVENT_LINK_ERR, errno, path);
-	      _exit(0);
-	    }
+	    die(_("cannot access path %s: %s"), path, EC_MISC);
 	}
       else if (rc < size-1)
 	{
@@ -88,18 +85,15 @@ static char *my_readlink(int errfd, char *path)
     }
 }
 
-void inotify_dnsmasq_init(int errfd)
+void inotify_dnsmasq_init()
 {
   struct resolvc *res;
   inotify_buffer = safe_malloc(INOTIFY_SZ);
   daemon->inotifyfd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
   
   if (daemon->inotifyfd == -1)
-    {
-      send_event(errfd, EVENT_INOTFY_ERR, errno, NULL);
-      _exit(0);
-    }
-  
+    die(_("failed to create inotify: %s"), NULL, EC_MISC);
+
   if (daemon->port == 0 || option_bool(OPT_NO_RESOLV))
     return;
   
@@ -111,13 +105,10 @@ void inotify_dnsmasq_init(int errfd)
       strcpy(path, res->name);
 
       /* Follow symlinks until we reach a non-symlink, or a non-existent file. */
-      while ((new_path = my_readlink(errfd, path)))
+      while ((new_path = my_readlink(path)))
 	{
 	  if (links-- == 0)
-	    {
-	      send_event(errfd, EVENT_TMSL_ERR, 0, res->name);
-	      _exit(0);
-	    }
+	    die(_("too many symlinks following %s"), res->name, EC_MISC);
 	  free(path);
 	  path = new_path;
 	}
@@ -133,18 +124,12 @@ void inotify_dnsmasq_init(int errfd)
 	  *d = '/';
 	  
 	  if (res->wd == -1 && errno == ENOENT)
-	    {
-	      send_event(errfd, EVENT_RESOLV_ERR, 0, res->name);
-	      _exit(0);
-	    }
+	    die(_("directory %s for resolv-file is missing, cannot poll"), res->name, EC_MISC);
 	}	  
 	 
       if (res->wd == -1)
-	{
-	  send_event(errfd, EVENT_IFILE_ERR, errno, res->name);
-	  _exit(0);
-	}
-      	
+	die(_("failed to create inotify for %s: %s"), res->name, EC_MISC);
+	
     }
 }
 

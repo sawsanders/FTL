@@ -206,7 +206,7 @@ int main_dnsmasq (int argc, char **argv)
       /* Must have at least a root trust anchor, or the DNSSEC code
 	 can loop forever. */
       for (ds = daemon->ds; ds; ds = ds->next)
-	if (ds->name[0] == 0)
+	if (ds->name && ds->name[0] == 0)
 	  break;
 
       if (!ds)
@@ -2244,12 +2244,12 @@ static void do_tcp_connection(struct listener *listener, time_t now, int slot)
   FTL_iface(iface, NULL, 0);
   /**********************************************/
 
+  tcp_request(confd, now, &tcpbuff, &tcp_addr, netmask, auth_dns);
+  free(tcpbuff.iov_base);
 
   /************ Pi-hole modification ************/
   FTL_TCP_worker_terminating(true);
   /**********************************************/
-  tcp_request(confd, now, &tcpbuff, &tcp_addr, netmask, auth_dns);
-  free(tcpbuff.iov_base);
   
   for (s = daemon->servers; s; s = s->next)
     if (s->tcpfd != -1)

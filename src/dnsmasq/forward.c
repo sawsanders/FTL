@@ -2552,10 +2552,10 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
 	    break;
 	  
 	  /* Now get the query into the normal UDP packet buffer.
-	     Ignore queries long than this. If we're answering locally,
+	     Ignore queries longer than this. If we're answering locally,
 	     copy the query into the output buffer, but for forwarding, tcp_talk()
-	     wants the query in a a different buffer from the reply.
-	     Note that we overwrote any saved UDP query - this onlt matters in debug mode. */
+	     wants the query in  different buffer from the reply.
+	     Note that we overwrote any saved UDP query - this only matters in debug mode. */
 	  daemon->srv_save = NULL;
 	  if (!read_write(confd, (unsigned char *)&tcp_len, sizeof(tcp_len), RW_READ) ||
 	      !(size = ntohs(tcp_len)) || size > (size_t)daemon->packet_buff_sz ||
@@ -2571,6 +2571,15 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
 	  
 	  /* header == query */
 	  header = (struct dns_header *)daemon->packet;
+
+	  /* Add edns0 pheader to query */
+	  size = add_edns0_config(header, size, ((unsigned char *) header) + daemon->edns_pktsz, &peer_addr, now, &cacheable);
+
+	  /* Clear buffer to avoid risk of information disclosure. */
+	  memset(bigbuff->iov_base, 0, bigbuff->iov_len);
+	  /* Copy query into output buffer for local answering */
+	  memcpy(out_header, header, size);	    
+	      
 	  query_count++;
 	  
 	  /* log_query gets called indirectly all over the place, so 
@@ -2610,13 +2619,6 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
 		    do_bit = 1; /* do bit */ 
 		}
 
-	      size = add_edns0_config(header, size, ((unsigned char *) header) + daemon->edns_pktsz, &peer_addr, now, &cacheable);
-
-	      /* Clear buffer to avoid risk of information disclosure. */
-	      memset(bigbuff->iov_base, 0, bigbuff->iov_len);
-	      /* Copy query into output buffer for local answering */
-	      memcpy(out_header, header, size);	    
-	      
 	      log_query_mysockaddr((auth_dns ? F_NOERR | F_AUTH : 0) | F_QUERY | F_FORWARD, daemon->namebuff,
 				   &peer_addr, NULL, qtype);
 	      
@@ -2672,7 +2674,7 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
 	      else if (!allowed)
 		{
 		  ede = EDE_BLOCKED;
-		  m = answer_disallowed(header, size, (u32)mark, daemon->namebuff);
+		  m = answer_disallowed(out_header, size, (u32)mark, daemon->namebuff);
 		}
 #endif
 #ifdef HAVE_AUTH
@@ -2687,16 +2689,16 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
 		size_t ede_len = 0;
 		stale = 0;
 		// Generate DNS packet for reply
-		m = FTL_make_answer(header, ((char *) header) + 65536, size, ede_data, &ede_len);
+		m = FTL_make_answer(out_header, ((char *) out_header) + 65536, size, ede_data, &ede_len);
 		// The pseudoheader may contain important information such as EDNS0 version important for
 		// some DNS resolvers (such as systemd-resolved) to work properly. We should not discard them.
 		if (have_pseudoheader && m > 0)
 		{
 		  if (ede_len > 0) // Add EDNS0 option EDE if applicable
-		    m = add_pseudoheader(header, m, ((unsigned char *) header) + 65536,
+		    m = add_pseudoheader(out_header, m, ((unsigned char *) out_header) + 65536,
 		                         EDNS0_OPTION_EDE, ede_data, ede_len, do_bit, 0);
 		  else
-		    m = add_pseudoheader(header, m, ((unsigned char *) header) + 65536,
+		    m = add_pseudoheader(out_header, m, ((unsigned char *) out_header) + 65536,
 		                         0, NULL, 0, do_bit, 0);
 		}
 	      }
@@ -2710,7 +2712,7 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
       /* Do this by steam now we're not in the select() loop */
       check_log_writer(1); 
       
-      if (m == 0 && ede == EDE_UNSET)
+      if (!flags && m == 0 && ede == EDE_UNSET)
 	{
 	  struct server *master;
 	  int start;

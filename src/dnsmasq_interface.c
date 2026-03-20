@@ -58,6 +58,8 @@
 #include "ntp/ntp.h"
 // get_process_name()
 #include "procps.h"
+// init_api_sessions()
+#include "api/api.h"
 
 // Private prototypes
 static void print_flags(const unsigned int flags);
@@ -3324,6 +3326,11 @@ void FTL_fork_and_bind_sockets(struct passwd *ent_pw, bool dnsmasq_start)
 
 	// Start NTP sync thread
 	ntp_start_sync_thread(&attr);
+
+	// Restore sessions from database before starting the database thread to
+	// ensure that sessions import is not blocked by asynchronous query
+	// import in the database thread
+	init_api_sessions();
 
 	// Start database thread if database is used
 	if(pthread_create( &threads[DB], &attr, DB_thread, NULL ) != 0)

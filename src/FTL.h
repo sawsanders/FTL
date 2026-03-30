@@ -12,6 +12,29 @@
 
 #define __USE_XOPEN
 #define _GNU_SOURCE
+#ifdef __GNUC__
+/*
+ * Protect system headers from project-local macro redefinitions.
+ *
+ * `dnsmasq/dnsmasq.h` (and other third-party headers) define very common
+ * identifiers like `free`/`strdup` as macros that expand to internal
+ * wrappers (e.g. `free_real(__func__, __LINE__, (x))`). If such macros are
+ * active while system headers are included, they can be expanded inside
+ * libc prototypes and inline functions and produce invalid code, causing
+ * spurious compiler errors.
+ *
+ * To avoid this we push any existing macro definition on a stack, undefine
+ * the name while including system headers, and restore the original macro
+ * afterwards with `#pragma pop_macro`.
+ *
+ * Note: `#pragma push_macro`/`pop_macro` is a GCC/Clang extension, so we
+ * guard its use with `#ifdef __GNUC__` for portability.
+ */
+#pragma push_macro("free")
+#pragma push_macro("strdup")
+#undef free
+#undef strdup
+#endif
 #include <stdio.h>
 // variable argument lists
 #include <stdarg.h>
@@ -176,7 +199,12 @@
 // and report accordingly in the log. This will make debugging FTL crash
 // caused by insufficient memory or by code bugs (not properly dealing
 // with NULL pointers) much easier.
+#ifdef __GNUC__
+#pragma pop_macro("strdup")
+#pragma pop_macro("free")
+#endif
 #undef strdup // strdup() is a macro in itself, it needs special handling
+#undef free
 #define free(ptr) { FTLfree(ptr, __FILE__,  __FUNCTION__,  __LINE__); ptr = NULL; }
 #define strdup(str_in) FTLstrdup(str_in, __FILE__,  __FUNCTION__,  __LINE__)
 #define calloc(numer_of_elements, element_size) FTLcalloc(numer_of_elements, element_size, __FILE__,  __FUNCTION__,  __LINE__)

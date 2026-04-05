@@ -2279,9 +2279,12 @@ static ssize_t tcp_talk(int first, int last, int start, struct dns_header *heade
 	     someone might be attempting to insert bogus values into the cache by 
 	     sending replies containing questions and bogus answers.
 	     Try another server, or give up */
-	  p = (unsigned char *)(((struct dns_header *)recvbuff->iov_base)+1);
-	  if (extract_name(((struct dns_header *)recvbuff->iov_base), rsize, &p, daemon->namebuff, EXTR_NAME_COMPARE, 4) != 1)
+	  struct dns_header *header = (struct dns_header *)recvbuff->iov_base;
+	  p = (unsigned char *)(header+1);
+	  if (rsize < (unsigned int)sizeof(struct dns_header) || !(header->hb3 & HB3_QR) || ntohs(header->qdcount) != 1 ||
+	      extract_name(header, rsize, &p, daemon->namebuff, EXTR_NAME_COMPARE, 4) != 1)
 	    continue;
+	  
 	  GETSHORT(rtype, p); 
 	  GETSHORT(rclass, p);
       

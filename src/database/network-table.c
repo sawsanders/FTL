@@ -579,7 +579,7 @@ static bool insert_netDB_device(sqlite3 *db, const char *hwaddr, const time_t fi
 	}
 
 	// Bind firstSeen to prepared statement (2nd argument)
-	if((rc = sqlite3_bind_int(query_stmt, 2, firstSeen)) != SQLITE_OK)
+	if((rc = sqlite3_bind_int64(query_stmt, 2, firstSeen)) != SQLITE_OK)
 	{
 		log_err("insert_netDB_device(\"%s\",%lu, %lu, %u, \"%s\"): Failed to bind firstSeen (error %d): %s",
 		        hwaddr, (unsigned long)firstSeen, (unsigned long)lastQuery, numQueriesARP, macVendor, rc, sqlite3_errstr(rc));
@@ -587,7 +587,7 @@ static bool insert_netDB_device(sqlite3 *db, const char *hwaddr, const time_t fi
 	}
 
 	// Bind lastQuery to prepared statement (3rd argument)
-	if((rc = sqlite3_bind_int(query_stmt, 3, lastQuery)) != SQLITE_OK)
+	if((rc = sqlite3_bind_int64(query_stmt, 3, lastQuery)) != SQLITE_OK)
 	{
 		log_err("insert_netDB_device(\"%s\",%lu, %lu, %u, \"%s\"): Failed to bind lastQuery (error %d): %s",
 		        hwaddr, (unsigned long)firstSeen, (unsigned long)lastQuery, numQueriesARP, macVendor, rc, sqlite3_errstr(rc));
@@ -788,7 +788,7 @@ update_netDB_interface_end:
 	if(query_stmt != NULL)
 		sqlite3_finalize(query_stmt);
 
-	return true;
+	return success;
 }
 
 // Loop over all clients known to FTL and ensure we add them all to the database
@@ -1091,7 +1091,7 @@ static bool add_local_interfaces_to_network_table(sqlite3 *db, time_t now, unsig
 {
 	// Return early if database is known to be broken
 	if(FTLDBerror())
-		return SQLITE_ERROR;
+		return false;
 
 	log_debug(DEBUG_ARP, "Network table: Adding local interfaces to network table");
 	cJSON *links = cJSON_CreateArray();
@@ -1162,7 +1162,8 @@ static bool add_local_interfaces_to_network_table(sqlite3 *db, time_t now, unsig
 
 				// Try to import query data from a possibly previously existing mock-device
 				int mockID = find_device_by_mock_hwaddr(db, ipaddr);
-				int lastQuery = 0, firstSeen = now, numQueries = 0;
+				time_t firstSeen = now, lastQuery = 0;
+				int numQueries = 0;
 				if(mockID >= 0)
 				{
 					lastQuery = db_query_int_int(db, "SELECT lastQuery from network where id = ?1", mockID);
@@ -1252,11 +1253,17 @@ bool flush_network_table(void)
 
 	// Remove all IP addresses
 	if(dbquery(db, "DELETE FROM network_addresses;") != SQLITE_OK)
+	{
+		dbclose(&db);
 		return false;
+	}
 
 	// Remove all devices
 	if(dbquery(db, "DELETE FROM network;") != SQLITE_OK)
+	{
+		dbclose(&db);
 		return false;
+	}
 
 	// Close database
 	dbclose(&db);
@@ -1290,7 +1297,10 @@ void parse_neighbor_cache(sqlite3 *db)
 
 	// Delete old entries from network table
 	if(!clean_network_table(db))
+	{
+		dbquery(db, "ROLLBACK");
 		return;
+	}
 
 	// Initialize array of status for individual clients used to
 	// remember the status of a client already seen in the neigh cache
@@ -1298,6 +1308,12 @@ void parse_neighbor_cache(sqlite3 *db)
 	const int clients = counters->clients;
 	unlock_shm();
 	enum arp_status *client_status = calloc(clients, sizeof(enum arp_status));
+	if(client_status == NULL)
+	{
+		log_err("parse_neighbor_cache(): Failed to allocate client_status array (%d entries)", clients);
+		dbquery(db, "ROLLBACK");
+		return;
+	}
 	for(int i = 0; i < clients; i++)
 		client_status[i] = CLIENT_NOT_HANDLED;
 
@@ -1312,6 +1328,7 @@ void parse_neighbor_cache(sqlite3 *db)
 			log_err("Failed to read ARP cache, cannot update network table");
 			cJSON_Delete(json);
 			free(client_status);
+			dbquery(db, "ROLLBACK");
 			return;
 		}
 		log_debug(DEBUG_ARP, "Network table: Successfully read ARP cache with %i entries",
@@ -1421,7 +1438,10 @@ void parse_neighbor_cache(sqlite3 *db)
 			{
 				clientsData *client = getClient(clientID, true);
 				if(!client)
+				{
+					unlock_shm();
 					continue;
+				}
 
 				// Client is known to Pi-hole, update properties
 				// with their real values
@@ -1553,6 +1573,7 @@ void parse_neighbor_cache(sqlite3 *db)
 		{
 			log_err("Database error in ARP cache processing loop");
 			free(client_status);
+			dbquery(db, "ROLLBACK");
 			return;
 		}
 	}
@@ -1561,6 +1582,7 @@ void parse_neighbor_cache(sqlite3 *db)
 	if(killed)
 	{
 		free(client_status);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 
@@ -1569,6 +1591,7 @@ void parse_neighbor_cache(sqlite3 *db)
 	if(!add_FTL_clients_to_network_table(db, client_status, clients, now, &additional_entries))
 	{
 		free(client_status);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 
@@ -1577,17 +1600,26 @@ void parse_neighbor_cache(sqlite3 *db)
 
 	// Check thread cancellation
 	if(killed)
+	{
+		dbquery(db, "ROLLBACK");
 		return;
+	}
 
 	// Finally, loop over the available interfaces to ensure we list the
 	// IP addresses correctly (local addresses are NOT contained in the
 	// ARP/neighbor cache).
 	if(!add_local_interfaces_to_network_table(db, now, &additional_entries))
+	{
+		dbquery(db, "ROLLBACK");
 		return;
+	}
 
 	// Check thread cancellation
 	if(killed)
+	{
+		dbquery(db, "ROLLBACK");
 		return;
+	}
 
 	// Ensure mock-devices which are not assigned to any addresses any more
 	// (they have been converted to "real" devices), are removed at this point
@@ -1599,6 +1631,7 @@ void parse_neighbor_cache(sqlite3 *db)
 	{
 		log_err("Database error in mock-device cleaning statement");
 		checkFTLDBrc(rc);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 
@@ -1612,6 +1645,7 @@ void parse_neighbor_cache(sqlite3 *db)
 			log_err("Storing devices in network table failed: %s", sqlite3_errstr(rc));
 
 		checkFTLDBrc(rc);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 
@@ -1670,9 +1704,6 @@ bool unify_hwaddr(sqlite3 *db)
 		const int id = sqlite3_column_int(stmt, 0);
 		const char *hwaddr = (char*)sqlite3_column_text(stmt, 1);
 
-		// Reset statement
-		sqlite3_reset(stmt);
-
 		// Update firstSeen with lowest value across all rows with the same hwaddr
 		dbquery(db, "UPDATE network "\
 		            "SET firstSeen = (SELECT MIN(firstSeen) FROM network WHERE hwaddr = \'%s\' COLLATE NOCASE) "\
@@ -1687,6 +1718,11 @@ bool unify_hwaddr(sqlite3 *db)
 		dbquery(db, "DELETE FROM network "\
 		            "WHERE hwaddr = \'%s\' COLLATE NOCASE "\
 		            "AND id != %i;", hwaddr, id);
+
+		// Reset statement only after all queries using hwaddr have
+		// executed as sqlite3_column_text() pointers are invalidated by
+		// sqlite3_reset().
+		sqlite3_reset(stmt);
 	}
 
 	// Update database version to 4
@@ -1734,8 +1770,6 @@ static bool getMACVendor(const char *hwaddr, char vendor[MAXVENDORLEN])
 		strncpy(vendor, "virtual interface", MAXVENDORLEN);
 		return true;
 	}
-
-	log_debug(DEBUG_ARP, "getMACVendor(\"%s\")", hwaddr);
 
 	log_debug(DEBUG_ARP, "getMACVendor(\"%s\")", hwaddr);
 
@@ -1851,7 +1885,7 @@ bool updateMACVendorRecords(sqlite3 *db)
 		const int id = sqlite3_column_int(stmt, 0);
 
 		// Get vendor for MAC
-		char vendor[MAXVENDORLEN];
+		char vendor[MAXVENDORLEN] = { 0 };
 		getMACVendor((char*)sqlite3_column_text(stmt, 1), vendor);
 
 		// Prepare statement
@@ -2445,8 +2479,8 @@ bool networkTable_readDevicesGetRecord(sqlite3_stmt *read_stmt, network_record *
 		network->id = sqlite3_column_int(read_stmt, 0);
 		network->hwaddr = (char*)sqlite3_column_text(read_stmt, 1);
 		network->iface = (char*)sqlite3_column_text(read_stmt, 2);
-		network->firstSeen = sqlite3_column_int(read_stmt, 3);
-		network->lastQuery = sqlite3_column_int(read_stmt, 4);
+		network->firstSeen = sqlite3_column_int64(read_stmt, 3);
+		network->lastQuery = sqlite3_column_int64(read_stmt, 4);
 		network->numQueries = sqlite3_column_int(read_stmt, 5);
 		network->macVendor = (char*)sqlite3_column_text(read_stmt, 6);
 		return true;
@@ -2511,7 +2545,7 @@ bool networkTable_readIPsGetRecord(sqlite3_stmt *read_stmt, network_addresses_re
 		network_addresses->ip = (char*)sqlite3_column_text(read_stmt, 0);
 		network_addresses->lastSeen = sqlite3_column_int64(read_stmt, 1);
 		network_addresses->name = (char*)sqlite3_column_text(read_stmt, 2);
-		network_addresses->nameUpdated = sqlite3_column_int64(read_stmt, 1);
+		network_addresses->nameUpdated = sqlite3_column_int64(read_stmt, 3);
 		return true;
 	}
 

@@ -264,8 +264,6 @@ set(sources
         signals.h
         timers.c
         timers.h
-        vector.c
-        vector.h
         version.c
         version.h
         )

@@ -188,21 +188,12 @@ setup() {
   run bash -c "grep -c \"Gravity database: Client aa:bb:cc:dd:ee:ff found. Using groups (4)\" /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'Regex deny: Querying associated regexes for client 127.0.0.4: \"SELECT id from vw_regex_denylist WHERE group_id IN (4);\"' /var/log/pihole/FTL.log"
+  run bash -c "grep -c 'Regex deny: Querying associated regexes for client 127.0.0.4 (groups: 4)' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'Regex allow: Querying associated regexes for client 127.0.0.4: \"SELECT id from vw_regex_allowlist WHERE group_id IN (4);\"' /var/log/pihole/FTL.log"
+  run bash -c "grep -c 'Regex allow: Querying associated regexes for client 127.0.0.4 (groups: 4)' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT id from vw_allowlist WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT id from vw_denylist WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT adlist_id from vw_gravity WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
   run bash -c "grep -c 'Regex allow ([[:digit:]]*, DB ID [[:digit:]]*) .* NOT ENABLED for client 127.0.0.4' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "2" ]]
@@ -226,21 +217,12 @@ setup() {
   run bash -c "grep -c \"Gravity database: Client aa:bb:cc:dd:ee:ff found. Using groups (4)\" /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'Regex deny: Querying associated regexes for client 127.0.0.5: \"SELECT id from vw_regex_denylist WHERE group_id IN (4);\"' /var/log/pihole/FTL.log"
+  run bash -c "grep -c 'Regex deny: Querying associated regexes for client 127.0.0.5 (groups: 4)' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'Regex allow: Querying associated regexes for client 127.0.0.5: \"SELECT id from vw_regex_allowlist WHERE group_id IN (4);\"' /var/log/pihole/FTL.log"
+  run bash -c "grep -c 'Regex allow: Querying associated regexes for client 127.0.0.5 (groups: 4)' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT id from vw_allowlist WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT id from vw_denylist WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT adlist_id from vw_gravity WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
   run bash -c "grep -c 'Regex allow ([[:digit:]]*, DB ID [[:digit:]]*) .* NOT ENABLED for client 127.0.0.5' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "2" ]]
@@ -270,19 +252,10 @@ setup() {
   run bash -c "grep -c \"Gravity database: Client 00:11:22:33:44:55 found (identified by interface enp0s123). Using groups (5)\" /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'Regex deny: Querying associated regexes for client 127.0.0.6: \"SELECT id from vw_regex_denylist WHERE group_id IN (5);\"' /var/log/pihole/FTL.log"
+  run bash -c "grep -c 'Regex deny: Querying associated regexes for client 127.0.0.6 (groups: 5)' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'Regex allow: Querying associated regexes for client 127.0.0.6: \"SELECT id from vw_regex_allowlist WHERE group_id IN (5);\"' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT id from vw_allowlist WHERE domain = ? AND group_id IN (5);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT id from vw_denylist WHERE domain = ? AND group_id IN (5);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT adlist_id from vw_gravity WHERE domain = ? AND group_id IN (5);' /var/log/pihole/FTL.log"
+  run bash -c "grep -c 'Regex allow: Querying associated regexes for client 127.0.0.6 (groups: 5)' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
   run bash -c "grep -c 'Regex allow ([[:digit:]]*, DB ID [[:digit:]]*) .* NOT ENABLED for client 127.0.0.6' /var/log/pihole/FTL.log"
@@ -715,9 +688,9 @@ setup() {
   [[ "${lines[@]}" == *"CREATE TABLE IF NOT EXISTS \"network\" (id INTEGER PRIMARY KEY NOT NULL, hwaddr TEXT UNIQUE NOT NULL, interface TEXT NOT NULL, firstSeen INTEGER NOT NULL, lastQuery INTEGER NOT NULL, numQueries INTEGER NOT NULL, macVendor TEXT, aliasclient_id INTEGER);"* ]]
   [[ "${lines[@]}" == *"CREATE TABLE IF NOT EXISTS \"network_addresses\" (network_id INTEGER NOT NULL, ip TEXT UNIQUE NOT NULL, lastSeen INTEGER NOT NULL DEFAULT (cast(strftime('%s', 'now') as int)), name TEXT, nameUpdated INTEGER, FOREIGN KEY(network_id) REFERENCES network(id));"* ]]
   [[ "${lines[@]}" == *"CREATE TABLE aliasclient (id INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, comment TEXT);"* ]]
-  [[ "${lines[@]}" == *"INSERT INTO ftl VALUES(0,21,'Database version');"* ]]
+  [[ "${lines[@]}" == *"INSERT INTO ftl VALUES(0,22,'Database version');"* ]]
   # vvv This has been added in version 10 vvv
-  [[ "${lines[@]}" == *"CREATE VIEW queries AS SELECT id, timestamp, type, status, CASE typeof(domain) WHEN 'integer' THEN (SELECT domain FROM domain_by_id d WHERE d.id = q.domain) ELSE domain END domain,CASE typeof(client) WHEN 'integer' THEN (SELECT ip FROM client_by_id c WHERE c.id = q.client) ELSE client END client,CASE typeof(forward) WHEN 'integer' THEN (SELECT forward FROM forward_by_id f WHERE f.id = q.forward) ELSE forward END forward,CASE typeof(additional_info) WHEN 'integer' THEN (SELECT content FROM addinfo_by_id a WHERE a.id = q.additional_info) ELSE additional_info END additional_info, reply_type, reply_time, dnssec, list_id, ede FROM query_storage q;"* ]]
+  [[ "${lines[@]}" == *"CREATE VIEW queries AS SELECT q.id, q.timestamp, q.type, q.status, COALESCE(d.domain, q.domain) AS domain, COALESCE(c.ip, q.client) AS client, COALESCE(f.forward, q.forward) AS forward, COALESCE(a.content, q.additional_info) AS additional_info, q.reply_type, q.reply_time, q.dnssec, q.list_id, q.ede FROM query_storage q LEFT JOIN domain_by_id d ON q.domain = d.id LEFT JOIN client_by_id c ON q.client = c.id LEFT JOIN forward_by_id f ON q.forward = f.id LEFT JOIN addinfo_by_id a ON q.additional_info = a.id;"* ]]
   [[ "${lines[@]}" == *"CREATE TABLE domain_by_id (id INTEGER PRIMARY KEY, domain TEXT NOT NULL);"* ]]
   [[ "${lines[@]}" == *"CREATE TABLE client_by_id (id INTEGER PRIMARY KEY, ip TEXT NOT NULL, name TEXT);"* ]]
   [[ "${lines[@]}" == *"CREATE TABLE forward_by_id (id INTEGER PRIMARY KEY, forward TEXT NOT NULL);"* ]]
@@ -1858,6 +1831,68 @@ setup() {
   printf "%s\n" "${lines[@]}"
   [[ $status == 0 ]]
 
+@test "API /stats/summary: Returns valid summary JSON with expected fields" {
+  run bash -c 'curl -s 127.0.0.1/api/stats/summary'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == '{"queries":{"total":133,"blocked":49,"percent_blocked":36.842105865478516,"unique_domains":77,"forwarded":47,"cached":37,"frequency":'*',"types":{"A":69,"AAAA":19,"ANY":3,"SRV":1,"SOA":0,"PTR":4,"TXT":10,"NAPTR":1,"MX":1,"DS":7,"RRSIG":0,"DNSKEY":9,"NS":0,"SVCB":3,"HTTPS":3,"OTHER":1},"status":{"UNKNOWN":0,"GRAVITY":7,"FORWARDED":47,"CACHE":37,"REGEX":21,"DENYLIST":4,"EXTERNAL_BLOCKED_IP":4,"EXTERNAL_BLOCKED_NULL":3,"EXTERNAL_BLOCKED_NXRA":0,"GRAVITY_CNAME":6,"REGEX_CNAME":0,"DENYLIST_CNAME":0,"RETRIED":0,"RETRIED_DNSSEC":0,"IN_PROGRESS":0,"DBBUSY":0,"SPECIAL_DOMAIN":2,"CACHE_STALE":0,"EXTERNAL_BLOCKED_EDE15":2},"replies":{"UNKNOWN":0,"NODATA":7,"NXDOMAIN":8,"CNAME":13,"IP":63,"DOMAIN":2,"RRNAME":12,"SERVFAIL":0,"REFUSED":6,"NOTIMP":2,"OTHER":0,"DNSSEC":7,"NONE":2,"BLOB":11}},"clients":{"active":11,"total":11},"gravity":{"domains_being_blocked":8,"last_update":0},"took":'*'}' ]]
+}
+
+@test "API /stats/top_domains: Returns expected structure, sorted descending" {
+  run bash -c 'curl -s 127.0.0.1/api/stats/top_domains?blocked=false'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == '{"domains":[{"domain":".","count":5},{"domain":"localhost","count":5},{"domain":"version.bind","count":4},{"domain":"regex1.ftl","count":4},{"domain":"pihole.mydomain.net","count":4},{"domain":"regex-notmultiple.ftl","count":3},{"domain":"a.ftl","count":3},{"domain":"aaaa.ftl","count":3},{"domain":"regex-multiple.ftl","count":2},{"domain":"antigravity.ftl","count":2}],"total_queries":133,"blocked_queries":49,"took":'*'}' ]]
+}
+
+@test "API /stats/top_domains: count parameter limits results" {
+  run bash -c 'curl -s "127.0.0.1/api/stats/top_domains?count=2" | jq ".domains | length"'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} -le 2 ]]
+}
+
+@test "API /stats/top_domains?blocked=true: Returns blocked domains including gravity.ftl, sorted descending" {
+  run bash -c 'curl -s "127.0.0.1/api/stats/top_domains?blocked=true"'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == '{"domains":[{"domain":"gravity.ftl","count":8},{"domain":"denied.ftl","count":4},{"domain":"umbrella.ftl","count":3},{"domain":"null.ftl","count":3},{"domain":"regex-multiple.ftl","count":3},{"domain":"regex5.ftl","count":2},{"domain":"regex-replyv46","count":2},{"domain":"regex-notmultiple.ftl","count":2},{"domain":"a-cname.ftl","count":2},{"domain":"regex-replyv6","count":2}],"total_queries":133,"blocked_queries":49,"took":'*'}' ]]
+}
+
+@test "API /stats/top_domains: Permitted domains do not include blocked-only domains" {
+  run bash -c 'curl -s 127.0.0.1/api/stats/top_domains'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == '{"domains":[{"domain":".","count":5},{"domain":"localhost","count":5},{"domain":"version.bind","count":4},{"domain":"regex1.ftl","count":4},{"domain":"pihole.mydomain.net","count":4},{"domain":"regex-notmultiple.ftl","count":3},{"domain":"a.ftl","count":3},{"domain":"aaaa.ftl","count":3},{"domain":"regex-multiple.ftl","count":2},{"domain":"antigravity.ftl","count":2}],"total_queries":133,"blocked_queries":49,"took":'*'}' ]]
+}
+
+@test "API /stats/top_clients: Returns expected structure with 127.0.0.1 on top, sorted descending" {
+  run bash -c 'curl -s 127.0.0.1/api/stats/top_clients'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == '{"clients":[{"name":"","ip":"127.0.0.1","count":105},{"name":"","ip":"::","count":14},{"name":"","ip":"127.0.0.3","count":4},{"name":"","ip":"127.0.0.2","count":4},{"name":"some-aliasclient","ip":"aliasclient-0","count":1},{"name":"","ip":"127.0.0.4","count":1},{"name":"","ip":"127.0.0.5","count":1},{"name":"","ip":"192.168.1.1","count":1},{"name":"","ip":"192.168.47.97","count":1},{"name":"","ip":"fe80::b167:af1e:968b:dead","count":1}],"total_queries":133,"blocked_queries":49,"took":'*'}' ]]
+}
+
+@test "API /stats/top_clients: count parameter limits results" {
+  run bash -c 'curl -s "127.0.0.1/api/stats/top_clients?count=1" | jq ".clients | length"'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} -eq 1 ]]
+}
+
+@test "API /stats/top_clients?blocked=true: Returns clients with blocked queries, sorted descending" {
+  run bash -c 'curl -s "127.0.0.1/api/stats/top_clients?blocked=true"'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == '{"clients":[{"name":"","ip":"127.0.0.1","count":47},{"name":"","ip":"127.0.0.2","count":2}],"total_queries":133,"blocked_queries":49,"took":'*'}' ]]
+}
+
+@test "API /stats/upstreams: Returns upstream list with blocklist and cache entries" {
+  run bash -c 'curl -s 127.0.0.1/api/stats/upstreams | jq "(.upstreams | length) >= 2 and .upstreams[0].ip == \"blocklist\" and .upstreams[1].ip == \"cache\" and .total_queries > 0 and (.forwarded_queries != null)"'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == "true" ]]
+}
+
+@test "API /stats/upstreams: Blocklist count matches summary blocked count" {
+  run bash -c 'upstream_blocked=$(curl -s 127.0.0.1/api/stats/upstreams | jq ".upstreams[0].count"); summary_blocked=$(curl -s 127.0.0.1/api/stats/summary | jq ".queries.blocked"); [ "$upstream_blocked" = "$summary_blocked" ] && echo "match" || echo "mismatch: $upstream_blocked vs $summary_blocked"'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == "match" ]]
+}
+
+@test "Create, set, and use application password" {
+  run bash -c 'curl -s 127.0.0.1/api/auth/app'
   # Wait for the running FTL instance to pick up the config file change
   run bash -c "./pihole-FTL wait-for 'pihole.toml unchanged' /var/log/pihole/FTL.log 5 $logsize_before"
   printf "%s\n" "${lines[@]}"

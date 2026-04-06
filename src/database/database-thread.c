@@ -28,8 +28,10 @@
 #include "events.h"
 // get_FTL_db_stats()
 #include "files.h"
-// gravity_updated()
+// gravity_updated(), gravityDB_dump_perf_stats()
 #include "database/gravity-db.h"
+// FTL_dump_cache_stats() - forward declaration to avoid pulling in dnsmasq headers
+extern void FTL_dump_cache_stats(void);
 // parse_proc_meminfo()
 #include "procps.h"
 // sqlite3_mem_used()
@@ -180,6 +182,10 @@ void *DB_thread(void *val)
 	// Last memory log timestamp
 	time_t lastMemLog = 0;
 
+	// Last gravity performance statistics dump (start from now so the first
+	// dump happens after 5 minutes of actual activity, not immediately)
+	time_t lastGravityStats = before;
+
 	// This thread runs until shutdown of the process. We keep this thread
 	// running when pihole-FTL.db is corrupted because reloading of privacy
 	// level, and the gravity database (initially and after gravity)
@@ -193,6 +199,15 @@ void *DB_thread(void *val)
 		{
 			log_used_memory();
 			lastMemLog = now;
+		}
+
+		// Dump gravity lookup and FTL cache performance statistics every 5 minutes
+		// (only when debug.performance is enabled)
+		if(config.debug.performance.v.b && now - lastGravityStats >= 300)
+		{
+			FTL_dump_cache_stats();
+			gravityDB_dump_perf_stats();
+			lastGravityStats = now;
 		}
 
 		// If the database is busy, no moving is happening and queries are retained in

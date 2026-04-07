@@ -248,6 +248,7 @@ static bool create_counter_table(sqlite3* db)
 	if(!db_set_counter(db, DB_TOTALQUERIES, 0))
 	{
 		log_err("create_counter_table(): Failed to set total queries counter to zero!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
@@ -255,6 +256,7 @@ static bool create_counter_table(sqlite3* db)
 	if(!db_set_counter(db, DB_BLOCKEDQUERIES, 0))
 	{
 		log_err("create_counter_table(): Failed to set blocked queries counter to zero!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
@@ -262,6 +264,7 @@ static bool create_counter_table(sqlite3* db)
 	if(!db_set_FTL_property(db, DB_FIRSTCOUNTERTIMESTAMP, (unsigned long)time(0)))
 	{
 		log_err("create_counter_table(): Failed to update first counter timestamp!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
@@ -269,6 +272,7 @@ static bool create_counter_table(sqlite3* db)
 	if(!db_set_FTL_property(db, DB_VERSION, 2))
 	{
 		log_err("create_counter_table(): Failed to update database version!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 	// End transaction
@@ -716,6 +720,22 @@ void db_init(void)
 		dbversion = db_get_int(db, DB_VERSION);
 	}
 
+	// Update to version 22 if lower
+	if(dbversion < 22)
+	{
+		// Update to version 22: Replace queries VIEW with JOIN-based definition
+		log_info("Updating long-term database to version 22");
+		if(!replace_queries_view_with_joins(db))
+		{
+			log_info("Queries VIEW cannot be replaced, database not available");
+			dbclose(&db);
+			DBerror = true;
+			return;
+		}
+		// Get updated version
+		dbversion = db_get_int(db, DB_VERSION);
+	}
+
 	/* * * * * * * * * * * * * IMPORTANT * * * * * * * * * * * * *
 	 * If you add a new database version, check if the in-memory
 	 * schema needs to be update as well (always recreated from
@@ -824,14 +844,14 @@ bool db_update_disk_counter(sqlite3 *db, const enum counters_table_props ID, con
 		checkFTLDBrc(ret);
 		return false;
 	}
-	ret = sqlite3_bind_int(stmt, 1, ID);
+	ret = sqlite3_bind_int(stmt, 1, change);
 	if(ret != SQLITE_OK)
 	{
 		checkFTLDBrc(ret);
 		sqlite3_finalize(stmt);
 		return false;
 	}
-	ret = sqlite3_bind_int(stmt, 2, change);
+	ret = sqlite3_bind_int(stmt, 2, ID);
 	if(ret != SQLITE_OK)
 	{
 		checkFTLDBrc(ret);
@@ -883,6 +903,7 @@ int db_query_int(sqlite3 *db, const char* querystr)
 	{
 		log_err("Encountered step error in db_query_int(\"%s\"): %s",
 		        querystr, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
 		return DB_FAILED;
 	}
 
@@ -909,6 +930,8 @@ int db_query_int_int(sqlite3 *db, const char* querystr, const int arg)
 	{
 		log_err("Encountered bind error in db_query_int(\"%s\"): %s",
 		        querystr, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
+		return DB_FAILED;
 	}
 
 	rc = sqlite3_step(stmt);
@@ -929,6 +952,7 @@ int db_query_int_int(sqlite3 *db, const char* querystr, const int arg)
 	{
 		log_err("Encountered step error in db_query_int(\"%s\"): %s",
 		        querystr, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
 		return DB_FAILED;
 	}
 
@@ -955,6 +979,8 @@ int db_query_int_str(sqlite3 *db, const char* querystr, const char *arg)
 	{
 		log_err("Encountered bind error in db_query_int(\"%s\"): %s",
 		        querystr, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
+		return DB_FAILED;
 	}
 
 	rc = sqlite3_step(stmt);
@@ -975,6 +1001,7 @@ int db_query_int_str(sqlite3 *db, const char* querystr, const char *arg)
 	{
 		log_err("Encountered step error in db_query_int(\"%s\"): %s",
 		        querystr, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
 		return DB_FAILED;
 	}
 
@@ -1018,6 +1045,7 @@ double db_query_double(sqlite3 *db, const char* querystr)
 		log_err("Encountered step error in db_query_double(\"%s\"): %s",
 		        querystr, sqlite3_errstr(rc));
 		checkFTLDBrc(rc);
+		sqlite3_finalize(stmt);
 		return DB_FAILED;
 	}
 
@@ -1043,6 +1071,8 @@ int db_query_int_from_until(sqlite3 *db, const char* querystr, const double from
 	{
 		log_err("db_query_int_from_until(%s) - SQL error bind (%i): %s",
 		        querystr, rc, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
+		return DB_FAILED;
 	}
 
 	rc = sqlite3_step(stmt);
@@ -1061,6 +1091,7 @@ int db_query_int_from_until(sqlite3 *db, const char* querystr, const double from
 	{
 		log_err("db_query_int_from_until(%s) - SQL error step (%i): %s",
 		        querystr, rc, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
 		return DB_FAILED;
 	}
 
@@ -1081,13 +1112,15 @@ int db_query_int_from_until_type(sqlite3 *db, const char* querystr, const double
 		return DB_FAILED;
 	}
 
-	// Bind from and until to prepared statement
+	// Bind from, until, and type to prepared statement
 	if((rc = sqlite3_bind_double(stmt, 1, from))  != SQLITE_OK ||
 	   (rc = sqlite3_bind_double(stmt, 2, until)) != SQLITE_OK ||
 	   (rc = sqlite3_bind_int(stmt, 3, type)) != SQLITE_OK)
 	{
 		log_err("db_query_int_from_until(%s) - SQL error bind (%i): %s",
 		        querystr, rc, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
+		return DB_FAILED;
 	}
 
 	rc = sqlite3_step(stmt);
@@ -1106,6 +1139,7 @@ int db_query_int_from_until_type(sqlite3 *db, const char* querystr, const double
 	{
 		log_err("db_query_int_from_until(%s) - SQL error step (%i): %s",
 		        querystr, rc, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
 		return DB_FAILED;
 	}
 	rc = sqlite3_finalize(stmt);

@@ -3248,7 +3248,7 @@ unsigned int relay_reply4(struct dhcp_packet *mess, size_t sz, char *arrival_int
 
 	      /* delete agent info before return RFC 3046 para 2.1 */
 	      *opt = OPTION_END;
-	      memset(opt + 1, 0, option_len(opt) + 2);
+	      memset(opt + 1, 0, option_len(opt) + 1);
 	    }
 	}
       else if (mess->giaddr.s_addr == relay->local.addr4.s_addr)

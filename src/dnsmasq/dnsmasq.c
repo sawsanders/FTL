@@ -1405,8 +1405,6 @@ static void sig_handler(int sig)
 		  read_write(daemon->pipe_to_parent, (unsigned char *)(&daemon->forward_to_tcp), sizeof(daemon->forward_to_tcp), RW_WRITE);
 		  read_write(daemon->pipe_to_parent, (unsigned char *)(&daemon->forward_to_tcp->uid), sizeof(daemon->forward_to_tcp->uid), RW_WRITE);
 
-		  my_syslog(LOG_INFO, _("TCP process for DNSSEC validation timed out"));
-
 		  /*** Pi-hole modification ***/
 		  // TCP workers ignore all signals except SIGALRM
 		  FTL_TCP_worker_terminating(false);

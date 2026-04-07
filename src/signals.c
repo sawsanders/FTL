@@ -38,12 +38,6 @@ static volatile pid_t mpid = 0;
 static time_t FTLstarttime = 0;
 volatile int exit_code = EXIT_SUCCESS;
 
-// Saved by the SIGTERM handler for deferred logging in the main loop.
-// Only pid_t and uid_t (both integer types) are safe to write from a
-// signal handler via volatile.
-static volatile pid_t term_sender_pid = 0;
-static volatile uid_t term_sender_uid = 0;
-
 // Binary path stored by init_backtrace() — signal-handler-safe static buffer,
 // never reallocated, safe to read from any context including signal handlers
 #if defined(USE_UNWIND)

@@ -751,6 +751,28 @@ setup() {
   [[ "${lines[0]}" == "80o,443os,[::]:80o,[::]:443os" ]]
 }
 
+@test "CLI --config fails when config and backups are unavailable" {
+  run bash -c '
+    config_backup=/etc/pihole/pihole.toml.batsbak
+    backup_dir_backup=/etc/pihole/config_backups.batsbak
+    cleanup() {
+      if [[ -e "$config_backup" ]]; then
+        mv "$config_backup" /etc/pihole/pihole.toml || { echo "Failed to restore /etc/pihole/pihole.toml" >&2; return 1; }
+      fi
+      if [[ -e "$backup_dir_backup" ]]; then
+        mv "$backup_dir_backup" /etc/pihole/config_backups || { echo "Failed to restore /etc/pihole/config_backups" >&2; return 1; }
+      fi
+    }
+    trap cleanup EXIT
+    mv /etc/pihole/pihole.toml "$config_backup" || { echo "Failed to move /etc/pihole/pihole.toml for test setup" >&2; exit 1; }
+    mv /etc/pihole/config_backups "$backup_dir_backup" || { echo "Failed to move /etc/pihole/config_backups for test setup" >&2; exit 1; }
+    ./pihole-FTL --config debug.regex 2>&1
+  '
+  printf "%s\n" "${lines[@]}"
+  [[ $status -eq 1 ]]
+  [[ ${lines[0]} == *'Could not read or parse config file "/etc/pihole/pihole.toml" or its backup files.'* ]]
+}
+
 # NOTE: Log validation (WARNING/ERROR/CRIT/DB checks) moved to the final
 # log scan in run.sh, which runs after both BATS and pytest complete.
 

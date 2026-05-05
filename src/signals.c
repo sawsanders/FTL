@@ -16,6 +16,7 @@
 #  include <inttypes.h>  // SCNxPTR — portable sscanf format for uintptr_t
 #  include <sys/mman.h>  // mmap() — used for the intentional crash test subcommand
 #  include <dlfcn.h>     // dladdr() — dynamic symbol lookup from .dynsym
+#  include <ucontext.h>  // ucontext_t — register snapshot from SA_SIGINFO handlers
 #endif
 #include "signals.h"
 // logging routines
@@ -105,6 +106,11 @@ struct unwind_state {
 	int    max;
 };
 
+enum backtrace_source {
+	BT_SOURCE_SIGNAL_CONTEXT,
+	BT_SOURCE_UNWIND_FALLBACK,
+};
+
 // Callback invoked by _Unwind_Backtrace for each frame on the call stack.
 // Signal-handler-safe: no heap allocation, no stdio, no locks.
 static _Unwind_Reason_Code unwind_callback(struct _Unwind_Context *ctx, void *arg)
@@ -121,6 +127,145 @@ static _Unwind_Reason_Code unwind_callback(struct _Unwind_Context *ctx, void *ar
 	return _URC_NO_REASON;
 }
 #endif // USE_UNWIND (unwind_callback)
+
+#if defined(USE_UNWIND)
+// True when [addr, addr+bytes) is inside a readable mapping in /proc/self/maps.
+static bool is_readable_range(const uintptr_t addr, const size_t bytes)
+{
+	if(bytes == 0u)
+		return false;
+
+	FILE *maps = fopen("/proc/self/maps", "r");
+	if(maps == NULL)
+		return false;
+
+	bool readable = false;
+	char line[512];
+	while(fgets(line, sizeof(line), maps) != NULL)
+	{
+		uintptr_t start = 0, end = 0;
+		char perms[8] = { 0 };
+		const int n = sscanf(line, "%" SCNxPTR "-%" SCNxPTR " %7s %*s %*s %*s",
+		                     &start, &end, perms);
+		if(n != 3 || perms[0] != 'r')
+			continue;
+
+		if(addr >= start && addr < end && (size_t)(end - addr) >= bytes)
+		{
+			readable = true;
+			break;
+		}
+	}
+
+	fclose(maps);
+	return readable;
+}
+
+// True when addr points into an executable mapping.
+static bool is_executable_address(const uintptr_t addr)
+{
+	FILE *maps = fopen("/proc/self/maps", "r");
+	if(maps == NULL)
+		return false;
+
+	bool executable = false;
+	char line[512];
+	while(fgets(line, sizeof(line), maps) != NULL)
+	{
+		uintptr_t start = 0, end = 0;
+		char perms[8] = { 0 };
+		const int n = sscanf(line, "%" SCNxPTR "-%" SCNxPTR " %7s %*s %*s %*s",
+		                     &start, &end, perms);
+		if(n != 3 || perms[2] != 'x')
+			continue;
+
+		if(addr >= start && addr < end)
+		{
+			executable = true;
+			break;
+		}
+	}
+
+	fclose(maps);
+	return executable;
+}
+
+// Try to unwind from signal context using frame pointers.
+// This captures caller frames before the signal trampoline on targets where
+// the frame pointer chain is available.
+static int collect_from_signal_context(void **frames, const int max_frames, void *context)
+{
+	if(context == NULL || max_frames <= 0)
+		return 0;
+
+	ucontext_t *uc = (ucontext_t *)context;
+	uintptr_t ip = 0;
+	uintptr_t fp = 0;
+
+#if defined(__x86_64__)
+	ip = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+	fp = (uintptr_t)uc->uc_mcontext.gregs[REG_RBP];
+#elif defined(__aarch64__)
+	ip = (uintptr_t)uc->uc_mcontext.pc;
+	fp = (uintptr_t)uc->uc_mcontext.regs[29];
+#else
+	(void)uc;
+	return 0;
+#endif
+
+	int count = 0;
+	if(ip != 0)
+		frames[count++] = (void *)(ip - 1u);
+
+	while(count < max_frames && fp != 0)
+	{
+		if((fp & (sizeof(uintptr_t) - 1u)) != 0)
+			break;
+
+		if(!is_readable_range(fp, 2u*sizeof(uintptr_t)))
+			break;
+
+		const uintptr_t *frame = (const uintptr_t *)fp;
+		const uintptr_t next_fp = frame[0];
+		const uintptr_t ret = frame[1];
+
+		if(ret == 0 || !is_executable_address(ret - 1u))
+			break;
+
+		frames[count++] = (void *)(ret - 1u);
+
+		if(next_fp <= fp || next_fp - fp > 1u*1024u*1024u)
+			break;
+
+		fp = next_fp;
+	}
+
+	return count;
+}
+
+// Collect a backtrace either from an interrupted signal context (preferred)
+// or from the current stack as fallback.
+static int collect_backtrace_frames(void **frames, const int max_frames, void *context,
+                                    enum backtrace_source *source)
+{
+	if(max_frames <= 0)
+		return 0;
+
+	const int from_signal_context = collect_from_signal_context(frames, max_frames, context);
+	if(from_signal_context > 0)
+	{
+		if(source != NULL)
+			*source = BT_SOURCE_SIGNAL_CONTEXT;
+		return from_signal_context;
+	}
+
+	struct unwind_state state = { frames, 0, max_frames };
+	_Unwind_Backtrace(unwind_callback, &state);
+	if(source != NULL)
+		*source = BT_SOURCE_UNWIND_FALLBACK;
+	return state.count;
+}
+#endif // USE_UNWIND (collect_backtrace_frames)
 
 #if defined(USE_UNWIND)
 // Look up which /proc/self/maps entry contains addr and copy the basename
@@ -158,9 +303,10 @@ static void find_mapping_name(const void *addr, char *buf, const size_t buflen)
 // Result of a single-frame addr2line resolution attempt.
 // Used by generate_backtrace() to decide whether to print manual guidance.
 enum frame_result {
-	FRAME_RESOLVED,    // addr2line resolved function name + source location
-	FRAME_UNRESOLVED,  // addr2line was attempted but did not resolve the frame
-	FRAME_SKIPPED,     // addr2line was not attempted (disabled or binary path unknown)
+	FRAME_RESOLVED,     // addr2line resolved function name + source location
+	FRAME_UNRESOLVED,   // addr2line was attempted but is not installed
+	FRAME_UNRESOLVABLE, // addr2line was attempted but could not resolve the frame, even with dladdr() fallback
+	FRAME_SKIPPED,      // addr2line was not attempted (disabled or binary path unknown)
 };
 
 // Log one backtrace frame as a single line.
@@ -230,7 +376,7 @@ static enum frame_result log_frame(const int idx, const void *addr, const void *
 			else
 				log_info("  #%-2d  %p in ?? ()", idx, addr);
 		}
-		return FRAME_UNRESOLVED;
+		return FRAME_UNRESOLVABLE;
 	}
 
 	// Strip the compile-time source root to show project-relative paths
@@ -273,16 +419,18 @@ static char * __attribute__ ((nonnull (1))) getthread_name(char buffer[16])
 // Log backtrace to the FTL log.
 // Uses _Unwind_Backtrace (GCC libgcc) on all targets — glibc AND musl,
 // static-pie AND dynamic, all architectures.
-void generate_backtrace(void)
+static void generate_backtrace_internal(void *context)
 {
 #if defined(USE_UNWIND)
 	void *frames[128];
-	struct unwind_state state = { frames, 0, 128 };
-	_Unwind_Backtrace(unwind_callback, &state);
+	enum backtrace_source source = BT_SOURCE_UNWIND_FALLBACK;
+	const int frame_count = collect_backtrace_frames(frames, 128, context, &source);
+	const char *source_str = source == BT_SOURCE_SIGNAL_CONTEXT ?
+	                         "signal context" : "_Unwind_Backtrace fallback";
 
-	log_info("Backtrace (%d frames):", state.count);
+	log_info("Backtrace (%d frames, source: %s):", frame_count, source_str);
 	bool any_addr2line_failed = false;
-	for(int i = 0; i < state.count; i++)
+	for(int i = 0; i < frame_count; i++)
 	{
 		void *rel = (void *)((uintptr_t)frames[i] - exe_load_addr);
 		if(log_frame(i, frames[i], rel) == FRAME_UNRESOLVED)
@@ -298,7 +446,7 @@ void generate_backtrace(void)
 	{
 		log_info("One or more frames could not be resolved. Install addr2line");
 		log_info("(e.g. \"apt install binutils\" or \"apk add binutils\") and run:");
-		for(int i = 0; i < state.count; i++)
+		for(int i = 0; i < frame_count; i++)
 		{
 			Dl_info dl = { 0 };
 			const char *obj = bin_path;
@@ -312,10 +460,15 @@ void generate_backtrace(void)
 		}
 	}
 	log_info("  --- end of backtrace (%d frame%s) ---",
-	         state.count, state.count == 1 ? "" : "s");
+	         frame_count, frame_count == 1 ? "" : "s");
 #else
 	log_info("!!! INFO: pihole-FTL has not been compiled with unwinding support, cannot generate backtrace !!!");
 #endif
+}
+
+void generate_backtrace(void)
+{
+	generate_backtrace_internal(NULL);
 }
 
 /**
@@ -333,7 +486,6 @@ static void terminate_error(void)
 
 static void __attribute__((noreturn)) signal_handler(int sig, siginfo_t *si, void *context)
 {
-	(void)context;
 	log_info("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
 	log_info("---------------------------->  FTL crashed!  <----------------------------");
 	log_info("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
@@ -443,7 +595,7 @@ static void __attribute__((noreturn)) signal_handler(int sig, siginfo_t *si, voi
 		}
 	}
 
-	generate_backtrace();
+	generate_backtrace_internal(context);
 
 	// Flush stdout immediately so the backtrace is visible even if a
 	// subsequent fault in cleanup() kills the process before exit() runs.

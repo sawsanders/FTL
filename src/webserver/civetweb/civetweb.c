@@ -479,6 +479,13 @@ _civet_safe_clock_gettime(int clk_id, struct timespec *t)
 #define SOCKET_TIMEOUT_QUANTUM (2000) /* in ms */
 #endif
 
+/* Non-blocking mbedTLS operations can repeatedly return WANT_READ/WRITE
+ * without making application-visible progress. Add a tiny backoff to avoid
+ * tight retry loops on idle HTTPS keep-alive connections. */
+#if !defined(MG_MBEDTLS_WANT_RETRY_DELAY_MS)
+#define MG_MBEDTLS_WANT_RETRY_DELAY_MS (5)
+#endif
+
 /* Do not try to compress files smaller than this limit. */
 #if !defined(MG_FILE_COMPRESSION_SIZE_LIMIT)
 #define MG_FILE_COMPRESSION_SIZE_LIMIT (1024) /* in bytes */
@@ -6488,6 +6495,10 @@ pull_inner(FILE *fp,
 				if ((nread == MBEDTLS_ERR_SSL_WANT_READ)
 				    || (nread == MBEDTLS_ERR_SSL_WANT_WRITE)
 				    || nread == MBEDTLS_ERR_SSL_ASYNC_IN_PROGRESS) {
+					/* The socket may stay poll-readable while mbedTLS still has
+					 * no application data to return. Without a small backoff,
+					 * higher-level request loops can devolve into a busy spin. */
+					mg_sleep(MG_MBEDTLS_WANT_RETRY_DELAY_MS);
 					nread = 0;
 				} else {
 					fprintf(stderr, "SSL read failed, error %d\n", nread);

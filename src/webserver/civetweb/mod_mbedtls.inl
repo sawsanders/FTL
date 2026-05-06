@@ -321,6 +321,11 @@ mbed_ssl_handshake(mbedtls_ssl_context *ssl)
 		    && rc != MBEDTLS_ERR_SSL_ASYNC_IN_PROGRESS) {
 			break;
 		}
+
+		/* Accepted HTTPS sockets are non-blocking. If the handshake cannot
+		 * progress yet, yield briefly so we do not spin a worker thread at
+		 * 100% CPU waiting for the peer. */
+		mg_sleep(MG_MBEDTLS_WANT_RETRY_DELAY_MS);
 	}
 
 #if MBEDTLS_VERSION_NUMBER >= 0x03000000

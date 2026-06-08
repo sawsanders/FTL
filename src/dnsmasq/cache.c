@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2026 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2025 Simon Kelley
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -19,17 +19,13 @@
 #include "webserver/webserver.h"
 
 static struct crec *cache_head = NULL, *cache_tail = NULL, **hash_table = NULL;
-static struct crec *config_spare = NULL;
+#ifdef HAVE_DHCP
+static struct crec *dhcp_spare = NULL;
+#endif
 static struct crec *new_chain = NULL;
 static int insert_error;
 static union bigname *big_free = NULL;
 static int bignames_left, hash_size;
-
-struct nameblock {
-  struct nameblock *next;
-  unsigned int last, index;
-  char data[NAMEBLOCK_CHARS];
-} *hostblocks = NULL;
 
 static void make_non_terminals(struct crec *source);
 static struct crec *really_insert(char *name, union all_addr *addr, unsigned short class,
@@ -211,64 +207,6 @@ void cache_init(void)
   
   /* create initial hash table*/
   rehash(daemon->cachesize);
-}
-
-static struct crec *get_config_crec(void)
-{
-  struct crec *ret;
-  
-  if (config_spare)
-    {
-      ret = config_spare;
-      config_spare = config_spare->next;
-    }
-  else
-    ret = whine_malloc(SIZEOF_POINTER_CREC);
-
-  return ret;
-}
-
-static void free_config_crec(struct crec *p)
-{
-  p->next = config_spare;
-  config_spare  = p;
-}
-
-static char *store_name(unsigned int namelen, unsigned int index)
-{
-  struct nameblock *block;
-  char *ret = NULL;
-
-  if (namelen > NAMEBLOCK_CHARS)
-    return NULL;
-  
-  for (block = hostblocks; block; block = block->next)
-    if (block->index == index && NAMEBLOCK_CHARS - block->last >= namelen)
-      break;
-
-  if (!block && ((block = whine_malloc(sizeof(struct nameblock)))))
-    {
-      block->next = hostblocks;
-      block->index = index;
-      hostblocks = block;
-    }
-  
-  if (block && NAMEBLOCK_CHARS - block->last >= namelen)
-    {
-      ret = &block->data[block->last];
-      block->last += namelen;
-    }
-
-  return ret;
-}
-
-static void free_names(unsigned int index)
-{
-  struct nameblock *block;
-
-  for (block = hostblocks; block; block = block->next)
-    if (index == UID_NONE || block->index == index)
-      block->last = 0;
 }
 
 /* In most cases, we create the hash table once here by calling this with (hash_table == NULL)
@@ -520,14 +458,12 @@ unsigned int cache_remove_uid(const unsigned int uid)
 	if ((crecp->flags & (F_HOSTS | F_DHCP | F_CONFIG)) && crecp->uid == uid)
 	  {
 	    *up = tmp;
-	    free_config_crec(crecp);
+	    free(crecp);
 	    removed++;
 	  }
 	else
 	  up = &crecp->hash_next;
       }
-
-  free_names(uid);
   
   return removed;
 }
@@ -936,7 +872,7 @@ void cache_end_insert(void)
 #ifdef HAVE_DNSSEC
 void cache_update_hwm(void)
 {
- /* Sneak out possibly updated crypto HWM values. */
+  /* Sneak out possibly updated crypto HWM values. */
   unsigned char op = PIPE_OP_STATS;
 
   read_write(daemon->pipe_to_parent, &op, sizeof(op), RW_WRITE);
@@ -1081,7 +1017,6 @@ int cache_recv_insert(time_t now, int fd)
       }
       
     case PIPE_OP_RESULT:
-    case PIPE_OP_KILLED:
       {
 	/* UDP validation moved to TCP to avoid truncation. 
 	   Restart UDP validation process with the returned result. */
@@ -1095,30 +1030,21 @@ int cache_recv_insert(time_t now, int fd)
 	    !read_write(fd, (unsigned char *)&ret_len, sizeof(ret_len), RW_READ) ||
 	    !read_write(fd, (unsigned char *)daemon->packet, ret_len, RW_READ) ||
 	    !read_write(fd, (unsigned char *)&forward, sizeof(forward), RW_READ) ||
-	    !read_write(fd, (unsigned char *)&uid, sizeof(uid), RW_READ))
+	    !read_write(fd, (unsigned char *)&uid, sizeof(uid), RW_READ) ||
+	    !read_write(fd, (unsigned char *)&keycount, sizeof(keycount), RW_READ) ||
+	    !read_write(fd, (unsigned char *)&keycountp, sizeof(keycountp), RW_READ) ||
+	    !read_write(fd, (unsigned char *)&validatecount, sizeof(validatecount), RW_READ) ||
+	    !read_write(fd, (unsigned char *)&validatecountp, sizeof(validatecountp), RW_READ))
 	  return 0;
-
-	if (op == PIPE_OP_RESULT && 
-	    (!read_write(fd, (unsigned char *)&keycount, sizeof(keycount), RW_READ) ||
-	     !read_write(fd, (unsigned char *)&keycountp, sizeof(keycountp), RW_READ) ||
-	     !read_write(fd, (unsigned char *)&validatecount, sizeof(validatecount), RW_READ) ||
-	     !read_write(fd, (unsigned char *)&validatecountp, sizeof(validatecountp), RW_READ)))
-	  return 0;
-
-	if (op == PIPE_OP_KILLED)
-	  my_syslog(LOG_INFO, _("TCP process for DNSSEC validation timed out"));
 	
 	/* There's a tiny chance that the frec may have been freed 
 	   and reused before the TCP process returns. Detect that with
 	   the uid field which is unique modulo 2^32 for each use. */
 	if (uid == forward->uid)
 	  {
-	    if (op == PIPE_OP_RESULT)
-	      {
-		/* repatriate the work counters from the child process. */
-		*keycountp = keycount;
-		*validatecountp = validatecount;
-	      }
+	    /* repatriate the work counters from the child process. */
+	    *keycountp = keycount;
+	    *validatecountp = validatecount;
 	    
 	    if (!forward->dependent)
 	      return_reply(now, forward, (struct dns_header *)daemon->packet, ret_len, status);
@@ -1345,7 +1271,7 @@ void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrlen,
   while ((lookup = cache_find_by_name(lookup, cache_get_name(cache), 0, cache->flags & (F_IPV4 | F_IPV6))))
     if ((lookup->flags & F_HOSTS) && memcmp(&lookup->addr, addr, addrlen) == 0)
       {
-	free_config_crec(cache);
+	free(cache);
 	return;
       }
     
@@ -1439,7 +1365,7 @@ static int gettok(FILE *f, char *token)
 	  return eatspace(f);
 	}
       
-      if (count < (MAXDNAMESTR - 1))
+      if (count < (MAXDNAME - 1))
 	{
 	  token[count++] = c;
 	  token[count] = 0;
@@ -1468,13 +1394,13 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
     {
       if (inet_pton(AF_INET, token, &addr) > 0)
 	{
-	  flags = F_NAMEP | F_HOSTS | F_IMMORTAL | F_FORWARD | F_REVERSE | F_IPV4;
+	  flags = F_HOSTS | F_IMMORTAL | F_FORWARD | F_REVERSE | F_IPV4;
 	  addrlen = INADDRSZ;
 	  domain_suffix = get_domain(addr.addr4);
 	}
       else if (inet_pton(AF_INET6, token, &addr) > 0)
 	{
-	  flags = F_NAMEP | F_HOSTS | F_IMMORTAL | F_FORWARD | F_REVERSE | F_IPV6;
+	  flags = F_HOSTS | F_IMMORTAL | F_FORWARD | F_REVERSE | F_IPV6;
 	  addrlen = IN6ADDRSZ;
 	  domain_suffix = get_domain6(&addr.addr6);
 	}
@@ -1508,37 +1434,27 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
 	  if ((canon = canonicalise(token, &nomem)))
 	    {
 	      /* If set, add a version of the name with a default domain appended */
-	      if (option_bool(OPT_EXPAND) && domain_suffix && !fqdn && (cache = get_config_crec()))
+	      if (option_bool(OPT_EXPAND) && domain_suffix && !fqdn && 
+		  (cache = whine_malloc(SIZEOF_BARE_CREC + strlen(canon) + 2 + strlen(domain_suffix))))
 		{
-		  if (!(cache->name.namep = store_name(strlen(canon) + 2 + strlen(domain_suffix), index)))
-		    free_config_crec(cache);
-		  else
-		    {
-		      strcpy(cache->name.namep, canon);
-		      strcat(cache->name.namep, ".");
-		      strcat(cache->name.namep, domain_suffix);
-		      cache->flags = flags;
-		      cache->ttd = daemon->local_ttl;
-		      add_hosts_entry(cache, &addr, addrlen, index, rhash, hashsz);
-		      name_count++;
-		      names_done++;
-		    }
+		  strcpy(cache->name.sname, canon);
+		  strcat(cache->name.sname, ".");
+		  strcat(cache->name.sname, domain_suffix);
+		  cache->flags = flags;
+		  cache->ttd = daemon->local_ttl;
+		  add_hosts_entry(cache, &addr, addrlen, index, rhash, hashsz);
+		  name_count++;
+		  names_done++;
 		}
-	      if ((cache = get_config_crec()))
+	      if ((cache = whine_malloc(SIZEOF_BARE_CREC + strlen(canon) + 1)))
 		{
-		  if (!(cache->name.namep = store_name(strlen(canon) + 1, index)))
-		    free_config_crec(cache);
-		  else
-		    {
-		      strcpy(cache->name.namep, canon);
-		      cache->flags = flags;
-		      cache->ttd = daemon->local_ttl;
-		      add_hosts_entry(cache, &addr, addrlen, index, rhash, hashsz);
-		      name_count++;
-		      names_done++;
-		    }
+		  strcpy(cache->name.sname, canon);
+		  cache->flags = flags;
+		  cache->ttd = daemon->local_ttl;
+		  add_hosts_entry(cache, &addr, addrlen, index, rhash, hashsz);
+		  name_count++;
+		  names_done++;
 		}
-	      
 	      free(canon);
 	      
 	    }
@@ -1589,7 +1505,7 @@ void cache_reload(void)
 	if (cache->flags & (F_HOSTS | F_CONFIG))
 	  {
 	    *up = cache->hash_next;
-	    free_config_crec(cache);
+	    free(cache);
 	  }
 	else if (!(cache->flags & F_DHCP))
 	  {
@@ -1604,13 +1520,11 @@ void cache_reload(void)
 	else
 	  up = &cache->hash_next;
       }
-
-  free_names(UID_NONE); /* free everything */
   
   /* Add locally-configured CNAMEs to the cache */
   for (a = daemon->cnames; a; a = a->next)
     if (a->alias[1] != '*' &&
-	((cache = get_config_crec())))
+	((cache = whine_malloc(SIZEOF_POINTER_CREC))))
       {
 	cache->flags = F_FORWARD | F_NAMEP | F_CNAME | F_IMMORTAL | F_CONFIG;
 	cache->ttd = a->ttl;
@@ -1624,30 +1538,25 @@ void cache_reload(void)
   
 #ifdef HAVE_DNSSEC
   for (ds = daemon->ds; ds; ds = ds->next)
-    if (ds->name && (cache = get_config_crec()))
+    if ((cache = whine_malloc(SIZEOF_POINTER_CREC)) &&
+	(cache->addr.ds.keydata = blockdata_alloc(ds->digest, ds->digestlen)))
       {
-	
-	if (!(cache->addr.ds.keydata = blockdata_alloc(ds->digest, ds->digestlen)))
-	  free_config_crec(cache);
-	else
+	cache->flags = F_FORWARD | F_IMMORTAL | F_DS | F_CONFIG | F_NAMEP;
+	cache->ttd = daemon->local_ttl;
+	cache->name.namep = ds->name;
+	cache->uid = ds->class;
+	if (ds->digestlen != 0)
 	  {
-	    cache->flags = F_FORWARD | F_IMMORTAL | F_DS | F_CONFIG | F_NAMEP;
-	    cache->ttd = daemon->local_ttl;
-	    cache->name.namep = ds->name;
-	    cache->uid = ds->class;
-	    if (ds->digestlen != 0)
-	      {
-		cache->addr.ds.keylen = ds->digestlen;
-		cache->addr.ds.algo = ds->algo;
-		cache->addr.ds.keytag = ds->keytag;
-		cache->addr.ds.digest = ds->digest_type;
-	      }
-	    else
-	      cache->flags |= F_NEG | F_DNSSECOK | F_NO_RR;
-	    
-	    cache_hash(cache);
-	    make_non_terminals(cache);
+	    cache->addr.ds.keylen = ds->digestlen;
+	    cache->addr.ds.algo = ds->algo;
+	    cache->addr.ds.keytag = ds->keytag;
+	    cache->addr.ds.digest = ds->digest_type;
 	  }
+	else
+	  cache->flags |= F_NEG | F_DNSSECOK | F_NO_RR;
+	
+	cache_hash(cache);
+	make_non_terminals(cache);
       }
 #endif
   
@@ -1662,7 +1571,7 @@ void cache_reload(void)
     for (nl = hr->names; nl; nl = nl->next)
       {
 	if ((hr->flags & HR_4) &&
-	    (cache = get_config_crec()))
+	    (cache = whine_malloc(SIZEOF_POINTER_CREC)))
 	  {
 	    cache->name.namep = nl->name;
 	    cache->ttd = hr->ttl;
@@ -1671,7 +1580,7 @@ void cache_reload(void)
 	  }
 
 	if ((hr->flags & HR_6) &&
-	    (cache = get_config_crec()))
+	    (cache = whine_malloc(SIZEOF_POINTER_CREC)))
 	  {
 	    cache->name.namep = nl->name;
 	    cache->ttd = hr->ttl;
@@ -1763,7 +1672,8 @@ void cache_unhash_dhcp(void)
       if (cache->flags & F_DHCP)
 	{
 	  *up = cache->hash_next;
-	  free_config_crec(cache);
+	  cache->next = dhcp_spare;
+	  dhcp_spare = cache;
 	}
       else
 	up = &cache->hash_next;
@@ -1814,7 +1724,7 @@ void cache_add_dhcp_entry(char *host_name, int prot,
   /* Name in hosts, address doesn't match */
   if (fail_crec)
     {
-      inet_ntop(prot, &fail_crec->addr, daemon->namebuff, MAXDNAMESTR);
+      inet_ntop(prot, &fail_crec->addr, daemon->namebuff, MAXDNAME);
       my_syslog(MS_DHCP | LOG_WARNING, 
 		_("not giving name %s to the DHCP lease of %s because "
 		  "the name exists in %s with address %s"), 
@@ -1834,7 +1744,12 @@ void cache_add_dhcp_entry(char *host_name, int prot,
   else
     flags |= F_REVERSE;
   
-  if ((crec = get_config_crec()))
+  if ((crec = dhcp_spare))
+    dhcp_spare = dhcp_spare->next;
+  else /* need new one */
+    crec = whine_malloc(SIZEOF_POINTER_CREC);
+  
+  if (crec) /* malloc may fail */
     {
       crec->flags = flags | F_NAMEP | F_DHCP | F_FORWARD;
       if (ttd == 0)
@@ -1881,7 +1796,15 @@ static void make_non_terminals(struct crec *source)
 	  hostname_isequal(name, cache_get_name(crecp)))
 	{
 	  *up = crecp->hash_next;
-	  free_config_crec(crecp);
+#ifdef HAVE_DHCP
+	  if (type & F_DHCP)
+	    {
+	      crecp->next = dhcp_spare;
+	      dhcp_spare = crecp;
+	    }
+	  else
+#endif
+	    free(crecp);
 	  break;
 	}
       else
@@ -1914,7 +1837,17 @@ static void make_non_terminals(struct crec *source)
 	  continue;
 	}
       
-      if ((crecp = get_config_crec()))
+#ifdef HAVE_DHCP
+      if ((source->flags & F_DHCP) && dhcp_spare)
+	{
+	  crecp = dhcp_spare;
+	  dhcp_spare = dhcp_spare->next;
+	}
+      else
+#endif
+	crecp = whine_malloc(SIZEOF_POINTER_CREC);
+
+      if (crecp)
 	{
 	  crecp->flags = (source->flags | F_NAMEP) & ~(F_IPV4 | F_IPV6 | F_CNAME | F_RR | F_DNSKEY | F_DS | F_REVERSE);
 	  if (!(crecp->flags & F_IMMORTAL))
@@ -2343,9 +2276,9 @@ char *querystr(char *desc, unsigned short type)
   unsigned int i;
   int len = 10; /* strlen("type=xxxxx") */
   const char *types = NULL;
-  static struct iovec buff = { NULL, 0 };
-  char *buffp;
-  
+  static char *buff = NULL;
+  static int bufflen = 0;
+
   for (i = 0; i < (sizeof(typestr)/sizeof(typestr[0])); i++)
     if (typestr[i].type == type)
       {
@@ -2360,28 +2293,37 @@ char *querystr(char *desc, unsigned short type)
        len += strlen(desc);
     }
   len++; /* terminator */
-
-  if (!expand_buf(&buff, len))
-    return "";
-
-  buffp = buff.iov_base;
   
-  if (desc)
+  if (!buff || bufflen < len)
     {
-      if (types)
-	sprintf(buffp, "%s[%s]", desc, types);
-      else
-	sprintf(buffp, "%s[type=%d]", desc, type);
+      if (buff)
+	free(buff);
+      else if (len < 20)
+	len = 20;
+      
+      buff = whine_malloc(len);
+      bufflen = len;
     }
-  else
+
+  if (buff)
     {
-      if (types)
-	sprintf(buffp, "<%s>", types);
+      if (desc)
+	{
+	  if (types)
+	    sprintf(buff, "%s[%s]", desc, types);
+	  else
+	    sprintf(buff, "%s[type=%d]", desc, type);
+	}
       else
-	sprintf(buffp, "<type=%d>", type);
+	{
+	  if (types)
+	    sprintf(buff, "<%s>", types);
+	  else
+	    sprintf(buff, "<type=%d>", type);
+	}
     }
   
-  return buffp;
+  return buff ? buff : "";
 }
 
 /**** Pi-hole modified: removed static and added prototype to dnsmasq.h ****/
@@ -2419,18 +2361,8 @@ const char *edestr(int ede)
     case EDE_UNS_NS3_ITER:                return "unsupported NSEC3 iterations value";
     case EDE_UNABLE_POLICY:               return "uanble to conform to policy";
     case EDE_SYNTHESIZED:                 return "synthesized";
-    case EDE_US_SERVFAIL:                 return "upstream returned SERVFAIL";
     default:                              return "unknown";
     }
-}
-
-static int error_occured(unsigned int flags) {
-  if (flags & F_RCODE)
-    return 1;
-  else if (flags & F_NEG)
-    return 1;
-  else
-    return 0;
 }
 
 /**** P-hole modified: Added file and line and serve log_query via macro defined in dnsmasq.h ****/
@@ -2448,15 +2380,12 @@ void _log_query(unsigned int flags, char *name, union all_addr *addr, char *arg,
   if (!option_bool(OPT_LOG))
     return;
 
-  if(option_bool(OPT_LOG_ONLY_FAILED) && !error_occured(flags))
-    return;
-
   /* F_NOERR is reused here to indicate logs arrising from auth queries */ 
   if (!(flags & F_NOERR) && option_bool(OPT_AUTH_LOG))
     return;
 
   /* build query type string if requested */
-  if (!(flags & (F_SERVER | F_IPSET | F_QUERY | F_KEYTAG | F_RR)) && type > 0)
+  if (!(flags & (F_SERVER | F_IPSET | F_QUERY)) && type > 0)
     arg = querystr(arg, type);
 
   dest = arg;
@@ -2472,25 +2401,19 @@ void _log_query(unsigned int flags, char *name, union all_addr *addr, char *arg,
     {
       dest = daemon->addrbuff;
 
-      if (flags & F_RR)
-	{
-	  if (flags & F_KEYTAG)
-	    dest = querystr(NULL, addr->rrblock.rrtype);
-	  else
-	    dest = querystr(NULL, addr->rrdata.rrtype);
-	}
-#ifdef HAVE_DNSSEC
-      else if (flags & F_KEYTAG)
-	{
-	  snprintf(daemon->addrbuff, ADDRSTRLEN, arg, addr->log.keytag, addr->log.algo, addr->log.digest);
-	  if (type)
-	    extra = " (not supported)";
-	}
-#endif
+       if (flags & F_RR)
+	 {
+	   if (flags & F_KEYTAG)
+	     dest = querystr(NULL, addr->rrblock.rrtype);
+	   else
+	     dest = querystr(NULL, addr->rrdata.rrtype);
+	 }
+       else if (flags & F_KEYTAG)
+	sprintf(daemon->addrbuff, arg, addr->log.keytag, addr->log.algo, addr->log.digest);
       else if (flags & F_RCODE)
 	{
 	  unsigned int rcode = addr->log.rcode;
-	  
+
 	  if (rcode == SERVFAIL)
 	    dest = "SERVFAIL";
 	  else if (rcode == REFUSED)

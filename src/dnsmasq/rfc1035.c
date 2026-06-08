@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2026 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2025 Simon Kelley
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -107,16 +107,11 @@ int extract_name(struct dns_header *header, size_t plen, unsigned char **pp,
 	  
 	  p = l + (unsigned char *)header;
 	}
-      else if (label_type == 0x00) /* label_type = 0 -> label. */
-	{
-	  /* reject wire-format names > MAXDNAME bytes
-	     This also ensures that internal-format
-	     names don't exceed MAXDNAMESTR characters. */
-	  namelen += l + 1; 
-	  /* namelen == MAXDNAME means terminator will overflow. */
+      else if (label_type == 0x00)
+	{ /* label_type = 0 -> label. */
+	  namelen += l + 1; /* include period */
 	  if (namelen >= MAXDNAME)
 	    return 0;
-
 	  if (!CHECK_LEN(header, p, plen, l))
 	    return 0;
 	  
@@ -125,13 +120,13 @@ int extract_name(struct dns_header *header, size_t plen, unsigned char **pp,
 	      {
 		unsigned char c = *p;
 
-		if (IS_NAME_ESCAPE(c))
+		if (c == 0 || c == '.' || c == NAME_ESCAPE)
 		  {
 		    *cp++ = NAME_ESCAPE;
 		    *cp++ = c+1;
 		  }
 		else
-		  *cp++ = c;
+		  *cp++ = c; 
 	      }
 	    else if (flip)
 	      {
@@ -323,7 +318,7 @@ unsigned char *skip_name(unsigned char *ansp, struct dns_header *header, size_t 
       else if (label_type == 0x40)
 	{
 	  /* Extended label type */
-	  unsigned int count, llen;
+	  unsigned int count;
 	  
 	  if (!CHECK_LEN(header, ansp, plen, 2))
 	    return NULL;
@@ -334,12 +329,9 @@ unsigned char *skip_name(unsigned char *ansp, struct dns_header *header, size_t 
 	  count = *(ansp++); /* Bits in bitstring */
 	  
 	  if (count == 0) /* count == 0 means 256 bits */
-	    llen = 32;
+	    ansp += 32;
 	  else
-	    llen = ((count-1)>>3)+1;
-
-	  if (!ADD_RDLEN(header, ansp, plen, llen))
-	    return NULL;
+	    ansp += ((count-1)>>3)+1;
 	}
       else
 	{ /* label type == 0 Bottom six bits is length */
@@ -504,7 +496,7 @@ int do_doctor(struct dns_header *header, size_t qlen, char *namebuff)
 	      header->hb3 &= ~HB3_AA;
 #ifdef HAVE_DNSSEC
 	      /* remove validated flag from this RR, since we changed it! */
-	      if (option_bool(OPT_DNSSEC_VALID) && i < daemon->rr_status_sz && i <  ntohs(header->ancount))
+	      if (option_bool(OPT_DNSSEC_VALID) && i <  ntohs(header->ancount))
 		daemon->rr_status[i] = 0;
 #endif
 	      done = 1;
@@ -546,7 +538,7 @@ static int find_soa(struct dns_header *header, size_t qlen, char *name, int *sub
 
   for (i = 0; i < ntohs(header->nscount); i++)
     {
-      if (!extract_name(header, qlen, &p, daemon->workspacename, EXTR_NAME_EXTRACT, 10))
+      if (!extract_name(header, qlen, &p, daemon->workspacename, EXTR_NAME_EXTRACT, 0))
 	return 0; /* bad packet */
       
       GETSHORT(qtype, p); 
@@ -616,9 +608,7 @@ static int find_soa(struct dns_header *header, size_t qlen, char *name, int *sub
 		  addr.rrblock.datalen += 20;
 		  
 #ifdef HAVE_DNSSEC
-		  if (option_bool(OPT_DNSSEC_VALID) &&
-		      i + ntohs(header->ancount) < daemon->rr_status_sz &&
-		      daemon->rr_status[i + ntohs(header->ancount)] != 0)
+		  if (option_bool(OPT_DNSSEC_VALID) && daemon->rr_status[i + ntohs(header->ancount)] != 0)
 		    {
 		      secflag = F_DNSSECOK; 
 		  
@@ -1471,11 +1461,6 @@ int check_for_ignored_address(struct dns_header *header, size_t qlen)
   return check_bad_address(header, qlen, daemon->ignore_addr, NULL, NULL);
 }
 
-/* Nameoffset > 0 means that the name of the new record already exists at the given offset,
-   so use a "jump" to that.
-   Nameoffset == 0 means use the first variable argument as the name of the new record.
-   nameoffset < 0 means use the first variable argument as the start of the new record name,
-   then "jump" to -nameoffset to complete it. */
 int add_resource_record(struct dns_header *header, char *limit, int *truncp, int nameoffset, unsigned char **pp, 
 			unsigned long ttl, int *offset, unsigned short type, unsigned short class, char *format, ...)
 {
@@ -1502,7 +1487,7 @@ int add_resource_record(struct dns_header *header, char *limit, int *truncp, int
   else
     {
       char *name = va_arg(ap, char *);
-      if (name && !(p = do_rfc1035_name(p, name, (unsigned char *)limit)))
+      if (name && !(p = do_rfc1035_name(p, name, limit)))
 	goto truncated;
       
       if (nameoffset < 0)
@@ -1566,7 +1551,7 @@ int add_resource_record(struct dns_header *header, char *limit, int *truncp, int
         /* get domain-name answer arg and store it in RDATA field */
         if (offset)
           *offset = p - (unsigned char *)header;
-        if (!(p = do_rfc1035_name(p, va_arg(ap, char *), (unsigned char *)limit)))
+        if (!(p = do_rfc1035_name(p, va_arg(ap, char *), limit)))
 	  goto truncated;
 	CHECK_LIMIT(1);
         *p++ = 0;

@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2025 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2026 Simon Kelley
  
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,7 +14,7 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#define COPYRIGHT "Copyright (c) 2000-2025 Simon Kelley"
+#define COPYRIGHT "Copyright (c) 2000-2026 Simon Kelley"
 
 /* We do defines that influence behavior of stdio.h, so complain
    if included too early. */
@@ -201,6 +201,11 @@ struct event_desc {
 #define EVENT_TIME_ERR   24
 #define EVENT_SCRIPT_LOG 25
 #define EVENT_TIME       26
+#define EVENT_LINK_ERR   27
+#define EVENT_INOTFY_ERR 28
+#define EVENT_TMSL_ERR   29
+#define EVENT_RESOLV_ERR 30
+#define EVENT_IFILE_ERR  31
 
 // Pi-hole
 #define EVENT_SIGNAL     255
@@ -292,7 +297,9 @@ struct event_desc {
 #define OPT_DO_0x20        75
 #define OPT_AUTH_LOG       76
 #define OPT_LEASEQUERY     77
-#define OPT_LAST           78
+#define OPT_LOG_ONLY_FAILED  78
+#define OPT_LOG_MALLOC     79
+#define OPT_LAST           80
 
 #define OPTION_BITS (sizeof(unsigned int)*8)
 #define OPTION_SIZE ( (OPT_LAST/OPTION_BITS)+((OPT_LAST%OPTION_BITS)!=0) )
@@ -491,7 +498,7 @@ struct interface_name {
 };
 
 union bigname {
-  char name[(2*MAXDNAME) + 1];
+  char name[MAXDNAMESTR+1];
   union bigname *next; /* freelist */
 };
 
@@ -561,6 +568,7 @@ struct crec {
 #define PIPE_OP_STATS   3  /* Update parent's stats */
 #define PIPE_OP_IPSET   4  /* Update IPset */
 #define PIPE_OP_NFTSET  5  /* Update NFTset */
+#define PIPE_OP_KILLED  6  /* child killed by SIGALARM */
 
 /* struct sockaddr is not large enough to hold any address,
    and specifically not big enough to hold an IPv6 address.
@@ -775,10 +783,9 @@ struct dyndir {
 #define STAT_NEED_DS            0x40000
 #define STAT_NEED_KEY           0x50000
 #define STAT_TRUNCATED          0x60000
-#define STAT_SECURE_WILDCARD    0x70000
-#define STAT_OK                 0x80000
-#define STAT_ABANDONED          0x90000
-#define STAT_ASYNC              0xa0000
+#define STAT_OK                 0x70000
+#define STAT_ABANDONED          0x80000
+#define STAT_ASYNC              0x90000
 
 #define DNSSEC_FAIL_NYV         0x0001 /* key not yet valid */
 #define DNSSEC_FAIL_EXP         0x0002 /* key expired */
@@ -792,6 +799,7 @@ struct dyndir {
 #define DNSSEC_FAIL_NSEC3_ITERS 0x0200 /* too many iterations in NSEC3 */
 #define DNSSEC_FAIL_BADPACKET   0x0400 /* bad packet */
 #define DNSSEC_FAIL_WORK        0x0800 /* too much crypto */
+#define DNSSEC_FAIL_UPSTREAM    0x1000 /* SERVFAIL from UPSTREAM */
 
 #define STAT_ISEQUAL(a, b)  (((a) & 0xffff0000) == (b))
 
@@ -1220,6 +1228,7 @@ extern struct daemon {
   int log_fac; /* log facility */
   char *log_file; /* optional log file */
   int max_logs;  /* queue limit */
+  int log_malloc; /* log malloc/realloc/free */
   int randport_limit; /* Maximum number of source ports for query. */
   int cachesize, ftabsize;
   int port, query_port, min_port, max_port;
@@ -1277,15 +1286,18 @@ extern struct daemon {
   /* globally used stuff for DNS */
   char *packet; /* packet buffer */
   int packet_buff_sz; /* size of above */
-  char *namebuff; /* MAXDNAME size buffer */
+  char *namebuff; /* MAXDNAMESTR+1 size buffer */
   char *workspacename;
 #ifdef HAVE_DNSSEC
-  char *keyname, *cname; /* MAXDNAME size buffer */
+  char *keyname, *cname; /* MAXDNAMESTR+1 size buffer */
   unsigned long *rr_status; /* ceiling in TTL from DNSSEC or zero for insecure */
   int rr_status_sz;
   int dnssec_no_time_check;
   int back_to_the_future;
   int limit[LIMIT_MAX];
+  struct frec *forward_to_tcp;
+  struct dns_header *header_to_tcp;
+  ssize_t plen_to_tcp;
 #endif
   struct frec *frec_list;
   struct frec_src *free_frec_src;
@@ -1475,13 +1487,14 @@ int in_zone(struct auth_zone *zone, char *name, char **cut);
 
 /* dnssec.c */
 #ifdef HAVE_DNSSEC
-size_t dnssec_generate_query(struct dns_header *header, unsigned char *end, char *name, int class, int id, int type);
+size_t dnssec_generate_query(struct dns_header *header, size_t outlen, char *name, int class, int id, int type);
 int dnssec_validate_by_ds(time_t now, struct dns_header *header, size_t plen, char *name,
 			  char *keyname, int class, int *validate_count);
 int dnssec_validate_ds(time_t now, struct dns_header *header, size_t plen, char *name,
 		       char *keyname, int class, int *validate_count);
+int cache_neg_ds(char *name, int flags, int class, time_t now, int neg_ttl);
 int dnssec_validate_reply(time_t now, struct dns_header *header, size_t plen, char *name, char *keyname, int *class,
-			  int check_unsigned, int *neganswer, int *nons, int *nsec_ttl, int *validate_count);
+			  int check_unsigned, int *neganswer, int *prim_ok, int *nons, int *nsec_ttl, int *validate_count);
 int dnskey_keytag(int alg, int flags, unsigned char *key, int keylen);
 size_t filter_rrsigs(struct dns_header *header, size_t plen);
 int setup_timestamp(void);
@@ -1496,6 +1509,7 @@ int verify(struct blockdata *key_data, unsigned int key_len, unsigned char *sig,
 char *ds_digest_name(int digest);
 char *algo_digest_name(int algo);
 char *nsec3_digest_name(int digest);
+void nettle_digest_wrapper(const struct nettle_hash *hash, void *ctx, size_t length, uint8_t *dst);
 
 /* util.c */
 void rand_init(void);
@@ -1505,12 +1519,23 @@ u64 rand64(void);
 int rr_on_list(struct rrlist *list, unsigned short rr);
 int legal_hostname(char *name);
 char *canonicalise(char *in, int *nomem);
-unsigned char *do_rfc1035_name(unsigned char *p, char *sval, char *limit);
+unsigned char *do_rfc1035_name(unsigned char *p, char *sval, unsigned char *limit);
 void *safe_malloc(size_t size);
 void safe_strncpy(char *dest, const char *src, size_t size);
 void safe_pipe(int *fd, int read_noblock);
-void *whine_malloc(size_t size);
-void *whine_realloc(void *ptr, size_t size);
+#define malloc_log(x, y) malloc_log_real(__func__, __LINE__, (x), (y))
+#define whine_malloc(x) whine_malloc_real(__func__, __LINE__, (x))
+#define whine_realloc(x, y) whine_realloc_real(NULL, __func__, __LINE__, (x), (y))
+#define expand_buf(x, y) expand_buf_real(__func__, __LINE__, (x), (y))
+#define expand_workspace(x, y, z) expand_workspace_real(__func__, __LINE__, (x), (y), (z))
+#define free(x) free_real(__func__, __LINE__, (x))
+void malloc_log_real(const char *func, unsigned int line, void *mem, size_t size);
+void free_real(const char *func, unsigned int line, void *ptr);
+void *whine_malloc_real(const char *func, unsigned int line, size_t size);
+void *whine_realloc_real(const char *wrapper, const char *func, unsigned int line, void *ptr, size_t size);
+int expand_buf_real(const char *func, unsigned int line, struct iovec *iov, size_t size);
+int expand_workspace_real(const char *func, unsigned int line, unsigned char ***wkspc, int *szp, int new);
+int get_line_alloc(FILE *f, char **buffp, size_t *sizep);
 int sa_len(union mysockaddr *addr);
 int sockaddr_isequal(const union mysockaddr *s1, const union mysockaddr *s2);
 int sockaddr_isnull(const union mysockaddr *s);
@@ -1532,9 +1557,9 @@ int parse_hex(char *in, unsigned char *out, int maxlen,
 	      unsigned int *wildcard_mask, int *mac_type);
 int memcmp_masked(unsigned char *a, unsigned char *b, int len, 
 		  unsigned int mask);
-int expand_buf(struct iovec *iov, size_t size);
-char *print_mac(char *buff, unsigned char *mac, int len);
+char *print_mac(unsigned char *mac, int len);
 int read_write(int fd, unsigned char *packet, int size, int rw);
+int read_writev(int fd, struct iovec *iov, int iovcnt, int rw);
 void close_fds(long max_fd, int spare1, int spare2, int spare3);
 int wildcard_match(const char* wildcard, const char* match);
 int wildcard_matchn(const char* wildcard, const char* match, int num);
@@ -1577,8 +1602,8 @@ int tcp_from_udp(time_t now, int status, struct dns_header *header, ssize_t *n,
 		 int class, char *name, struct server *server, 
 		 int *keycount, int *validatecount);
 #endif
-unsigned char *tcp_request(int confd, time_t now,
-			   union mysockaddr *local_addr, struct in_addr netmask, int auth_dns);
+void tcp_request(int confd, time_t now, struct iovec *bigbuff,
+		 union mysockaddr *local_addr, struct in_addr netmask, int auth_dns);
 void server_gone(struct server *server);
 int send_from(int fd, int nowild, char *packet, size_t len, 
 	       union mysockaddr *to, union all_addr *source,
@@ -1909,7 +1934,7 @@ int detect_loop(char *query, int type);
 
 /* inotify.c */
 #ifdef HAVE_INOTIFY
-void inotify_dnsmasq_init(void);
+void inotify_dnsmasq_init(int errfd);
 int inotify_check(time_t now);
 void set_dynamic_inotify(int flag, int total_size, struct crec **rhash, int revhashsz);
 #endif
@@ -1923,7 +1948,6 @@ int do_poll(int timeout);
 /* rrfilter.c */
 size_t rrfilter(struct dns_header *header, size_t *plen, int mode);
 short *rrfilter_desc(int type);
-int expand_workspace(unsigned char ***wkspc, int *szp, int new);
 int to_wire(char *name);
 void from_wire(char *name);
 /* modes. */
@@ -1934,11 +1958,11 @@ void from_wire(char *name);
 /* edns0.c */
 unsigned char *find_pseudoheader(struct dns_header *header, size_t plen,
 				   size_t *len, unsigned char **p, int *is_sign, int *is_last);
-size_t add_pseudoheader(struct dns_header *header, size_t plen, unsigned char *limit, 
+size_t add_pseudoheader(struct dns_header *header, size_t plen, size_t out_size, 
 			int optno, unsigned char *opt, size_t optlen, int set_do, int replace);
-size_t add_do_bit(struct dns_header *header, size_t plen, unsigned char *limit);
+size_t add_do_bit(struct dns_header *header, size_t plen, size_t outlen);
 void edns0_needs_mac(union mysockaddr *addr, time_t now);
-size_t add_edns0_config(struct dns_header *header, size_t plen, unsigned char *limit, 
+size_t add_edns0_config(struct dns_header *header, size_t plen, size_t outlen, 
 			union mysockaddr *source, time_t now, int *cacheable);
 int check_source(struct dns_header *header, size_t plen, unsigned char *pseudoheader, union mysockaddr *peer);
 
@@ -1961,7 +1985,7 @@ int lookup_domain(char *qdomain, int flags, int *lowout, int *highout);
 int filter_servers(int seed, int flags, int *lowout, int *highout);
 int is_local_answer(time_t now, int first, char *name);
 size_t make_local_answer(int flags, int gotname, size_t size, struct dns_header *header,
-			 char *name, char *limit, int first, int last, int ede);
+			 char *name, size_t limit, int first, int last, int ede);
 int server_samegroup(struct server *a, struct server *b);
 #ifdef HAVE_DNSSEC
 int dnssec_server(struct server *server, char *keyname, int is_ds, int *firstp, int *lastp);

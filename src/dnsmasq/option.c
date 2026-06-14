@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2025 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2026 Simon Kelley
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -26,6 +26,9 @@
 static volatile int mem_recover = 0;
 static jmp_buf mem_jmp;
 static int one_file(char *file, int hard_opt);
+
+static void *opt_malloc_real(const char *func, unsigned int line, size_t size);
+#define opt_malloc(x) opt_malloc_real(__func__, __LINE__, (x))
 
 /* Solaris headers don't have facility names. */
 #ifdef HAVE_SOLARIS_NETWORK
@@ -201,6 +204,7 @@ struct myoption {
 #define LOPT_DO_ENCODE     388
 #define LOPT_LEASEQUERY    389
 #define LOPT_SPLIT_RELAY   390
+#define LOPT_LOG_MALLOC    391
 
 #ifdef HAVE_GETOPT_LONG
 static const struct option opts[] =  
@@ -402,6 +406,7 @@ static const struct myoption opts[] =
     { "no-ident", 0, 0, LOPT_NO_IDENT },
     { "max-tcp-connections", 1, 0, LOPT_MAX_PROCS },
     { "leasequery", 2, 0, LOPT_LEASEQUERY },
+    { "log-malloc", 0, 0, LOPT_LOG_MALLOC },
     { NULL, 0, 0, 0 }
   };
 
@@ -610,6 +615,7 @@ static struct {
   { LOPT_NO_IDENT, OPT_NO_IDENT, NULL, gettext_noop("Do not add CHAOS TXT records."), NULL },
   { LOPT_CACHE_RR, ARG_DUP, "<RR-type>", gettext_noop("Cache this DNS resource record type."), NULL },
   { LOPT_MAX_PROCS, ARG_ONE, "<integer>", gettext_noop("Maximum number of concurrent tcp connections."), NULL },
+  { LOPT_LOG_MALLOC, OPT_LOG_MALLOC, NULL, gettext_noop("Log memory allocation for debugging."), NULL },
   { 0, 0, NULL, NULL, NULL }
 }; 
 
@@ -656,13 +662,13 @@ static void unhide_metas(char *cp)
       *cp = unhide_meta(*cp);
 }
 
-static void *opt_malloc(size_t size)
+static void *opt_malloc_real(const char *func, unsigned int line, size_t size)
 {
   void *ret;
 
   if (mem_recover)
     {
-      ret = whine_malloc(size);
+      ret = whine_malloc_real(func, line, size);
       if (!ret)
 	longjmp(mem_jmp, 1);
     }
@@ -3466,6 +3472,8 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	    }
 	  else if (strcmp(arg, "auth") == 0)
 	    set_option_bool(OPT_AUTH_LOG);
+	  else if (strcmp(arg, "only_failed") == 0)
+	    set_option_bool(OPT_LOG_ONLY_FAILED);
 	}
       break;
 
@@ -4575,39 +4583,41 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	    only allowed for agent-options. */
 	 
 	 arg = comma;
-	 if ((comma = split(arg)))
+	 if (option  == 'U' && strstr(arg, "enterprise:") == arg)
 	   {
-	     if (option  != 'U' || strstr(arg, "enterprise:") != arg)
+	     comma = split(arg);
+	     new->enterprise = atoi(arg+11);
+	     arg = comma;
+	   }
+	 
+	 if (arg)
+	   {
+	     for (dig = 0, colon = 0, p = (unsigned char *)arg; *p; p++)
+	       if (isxdigit(*p))
+		 dig = 1;
+	       else if (*p == ':')
+		 colon = 1;
+	       else
+		 break;
+	     
+	     unhide_metas(arg);
+	     if (option == 'U' || option == 'j' || *p || !dig || !colon)
 	       {
-	         free(new->netid.net);
-	         ret_err_free(gen_err, new);
+		 new->len = strlen(arg);  
+		 new->data = opt_malloc(new->len);
+		 memcpy(new->data, arg, new->len);
 	       }
 	     else
-	       new->enterprise = atoi(arg+11);
+	       {
+		 new->len = parse_hex(comma, (unsigned char *)arg, strlen(arg), NULL, NULL);
+		 new->data = opt_malloc(new->len);
+		 memcpy(new->data, arg, new->len);
+	       }
 	   }
-	 else
-	   comma = arg;
-	 
-	 for (dig = 0, colon = 0, p = (unsigned char *)comma; *p; p++)
-	   if (isxdigit(*p))
-	     dig = 1;
-	   else if (*p == ':')
-	     colon = 1;
-	   else
-	     break;
-	 
-	 unhide_metas(comma);
-	 if (option == 'U' || option == 'j' || *p || !dig || !colon)
+	 else if (option != 'U' || new->enterprise == 0)
 	   {
-	     new->len = strlen(comma);  
-	     new->data = opt_malloc(new->len);
-	     memcpy(new->data, comma, new->len);
-	   }
-	 else
-	   {
-	     new->len = parse_hex(comma, (unsigned char *)comma, strlen(comma), NULL, NULL);
-	     new->data = opt_malloc(new->len);
-	     memcpy(new->data, comma, new->len);
+	     free(new->netid.net);
+	     ret_err_free(gen_err, new);
 	   }
 	 
 	 switch (option)
@@ -4630,7 +4640,7 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	   }
 	 new->next = daemon->dhcp_vendors;
 	 daemon->dhcp_vendors = new;
-
+	 
 	 break;
       }
       
@@ -4953,7 +4963,8 @@ err:
 	      arg = NULL; /* provoke error below */
 	  }
 	
-	if (!domain || !arg || !(new->name = canonicalise_opt(domain)))
+	if (!domain || !arg || !new->intr ||
+	    !(new->name = canonicalise_opt(domain)))
 	  ret_err(option == LOPT_DYNHOST ?
 		  _("bad dynamic host") : _("bad interface name"));
 	
@@ -5463,9 +5474,20 @@ err:
 static void read_file(char *file, FILE *f, int hard_opt, int from_script)	
 {
   volatile int lineno = 0;
-  char *buff = daemon->namebuff;
+  char *buff;
+  size_t buffsz;
+
+  /* Memory allocation failure longjmps here if mem_recover == 1 */ 
+  if (hard_opt != 0)
+    {
+      setjmp(mem_jmp);
+      mem_recover = 1;
+    }
   
-  while (fgets(buff, MAXDNAME, f))
+  buff = NULL;
+  buffsz = 0;
+
+  while (get_line_alloc(f, &buff, &buffsz))
     {
       int white, i;
       volatile int option;
@@ -5473,15 +5495,7 @@ static void read_file(char *file, FILE *f, int hard_opt, int from_script)
       size_t len;
 
       option = (hard_opt == LOPT_REV_SERV) ? 0 : hard_opt;
-
-      /* Memory allocation failure longjmps here if mem_recover == 1 */ 
-      if (option != 0 || hard_opt == LOPT_REV_SERV)
-	{
-	  if (setjmp(mem_jmp))
-	    continue;
-	  mem_recover = 1;
-	}
-
+      
       arg = NULL;
       lineno++;
       errmess = NULL;
@@ -5732,7 +5746,7 @@ struct hostsfile *expand_filelist(struct hostsfile *list)
   struct dirent **namelist;
 
   /* find largest used index */
-  for (i = SRC_AH, ah = list; ah; ah = ah->next)
+  for (last = NULL, i = SRC_AH, ah = list; ah; ah = ah->next)
     {
       last = ah;
       
@@ -5940,23 +5954,17 @@ void reread_dhcp(void)
 
 void read_opts(int argc, char **argv, char *compile_opts)
 {
-  size_t argbuf_size = MAXDNAME;
-  char *argbuf = opt_malloc(argbuf_size);
-  /* Note that both /000 and '.' are allowed within labels. These get
-     represented in presentation format using NAME_ESCAPE as an escape
-     character. In theory, if all the characters in a name were /000 or
-     '.' or NAME_ESCAPE then all would have to be escaped, so the 
-     presentation format would be twice as long as the spec. */
-  char *buff = opt_malloc((MAXDNAME * 2) + 1);
+  size_t argbuf_size = 300;
+  char *argbuf = safe_malloc(argbuf_size);
   int option, testmode = 0;
   char *arg, *conffile = NULL;
   
   opterr = 0;
-
+  
   daemon = opt_malloc(sizeof(struct daemon));
   memset(daemon, 0, sizeof(struct daemon));
-  daemon->namebuff = buff;
-  daemon->workspacename = safe_malloc((MAXDNAME * 2) + 1);
+  daemon->namebuff = safe_malloc(MAXDNAMESTR+1);
+  daemon->workspacename = safe_malloc(MAXDNAMESTR+1);
   daemon->addrbuff = safe_malloc(ADDRSTRLEN);
   
   /* Set defaults - everything else is zero or NULL */
@@ -6200,9 +6208,9 @@ void read_opts(int argc, char **argv, char *compile_opts)
   /* create default, if not specified */
   if (daemon->authserver && !daemon->hostmaster)
     {
-      strcpy(buff, "hostmaster.");
-      strcat(buff, daemon->authserver);
-      daemon->hostmaster = opt_string_alloc(buff);
+      strcpy(daemon->namebuff, "hostmaster.");
+      strncat(daemon->namebuff, daemon->authserver, MAXDNAMESTR - strlen(daemon->namebuff));
+      daemon->hostmaster = opt_string_alloc(daemon->namebuff);
     }
 
   if (!daemon->dhcp_pxe_vendors)
@@ -6217,11 +6225,11 @@ void read_opts(int argc, char **argv, char *compile_opts)
     {
       struct mx_srv_record *mx;
       
-      if (gethostname(buff, MAXDNAME) == -1)
+      if (gethostname(daemon->namebuff, MAXDNAMESTR) == -1)
 	die(_("cannot get host-name: %s"), NULL, EC_MISC);
       
       for (mx = daemon->mxnames; mx; mx = mx->next)
-	if (!mx->issrv && hostname_isequal(mx->name, buff))
+	if (!mx->issrv && hostname_isequal(mx->name, daemon->namebuff))
 	  break;
       
       if ((daemon->mxtarget || option_bool(OPT_LOCALMX)) && !mx)
@@ -6230,12 +6238,12 @@ void read_opts(int argc, char **argv, char *compile_opts)
 	  mx->next = daemon->mxnames;
 	  mx->issrv = 0;
 	  mx->target = NULL;
-	  mx->name = opt_string_alloc(buff);
+	  mx->name = opt_string_alloc(daemon->namebuff);
 	  daemon->mxnames = mx;
 	}
       
       if (!daemon->mxtarget)
-	daemon->mxtarget = opt_string_alloc(buff);
+	daemon->mxtarget = opt_string_alloc(daemon->namebuff);
 
       for (mx = daemon->mxnames; mx; mx = mx->next)
 	if (!mx->issrv && !mx->target)
@@ -6250,7 +6258,8 @@ void read_opts(int argc, char **argv, char *compile_opts)
   
   if (option_bool(OPT_RESOLV_DOMAIN))
     {
-      char *line;
+      char *line = NULL;
+      size_t linesz = 0;
       FILE *f;
 
       if (option_bool(OPT_NO_RESOLV) ||
@@ -6261,7 +6270,7 @@ void read_opts(int argc, char **argv, char *compile_opts)
       if (!(f = fopen((daemon->resolv_files)->name, "r")))
 	die(_("failed to read %s: %s"), (daemon->resolv_files)->name, EC_FILE);
       
-      while ((line = fgets(buff, MAXDNAME, f)))
+      while (get_line_alloc(f, &line, &linesz))
 	{
 	  char *token = strtok(line, " \t\n\r");
 	  
@@ -6270,7 +6279,11 @@ void read_opts(int argc, char **argv, char *compile_opts)
 	  
 	  if ((token = strtok(NULL, " \t\n\r")) &&  
 	      (daemon->domain_suffix = canonicalise_opt(token)))
-	    break;
+	    {
+	      /* We don't call get_line_alloc() until it returns false and frees the automatically */
+	      get_line_alloc(NULL, &line, &linesz);
+	      break;
+	    }
 	}
 
       fclose(f);
@@ -6281,7 +6294,7 @@ void read_opts(int argc, char **argv, char *compile_opts)
 
   if (daemon->domain_suffix)
     {
-       /* add domain for any srv record without one. */
+      /* add domain for any srv record without one. */
       struct mx_srv_record *srv;
       
       for (srv = daemon->mxnames; srv; srv = srv->next)
@@ -6289,13 +6302,14 @@ void read_opts(int argc, char **argv, char *compile_opts)
 	    strchr(srv->name, '.') && 
 	    strchr(srv->name, '.') == strrchr(srv->name, '.'))
 	  {
-	    if (strlen(srv->name) + 1 + strlen(daemon->domain_suffix) > MAXDNAME)
+	    if (strlen(srv->name) + 1 + strlen(daemon->domain_suffix) > MAXDNAMESTR)
 	      die(_("srv-host name %s too long after domain appended"), srv->name, EC_MISC);
-	    strcpy(buff, srv->name);
-	    strcat(buff, ".");
-	    strcat(buff, daemon->domain_suffix);
+	    strcpy(daemon->namebuff, srv->name);
+	    strcat(daemon->namebuff, ".");
+	    strcat(daemon->namebuff, daemon->domain_suffix);
 	    free(srv->name);
-	    srv->name = opt_string_alloc(buff);
+	    if (!(srv->name = canonicalise_opt(daemon->namebuff)))
+	      die(_("bad srv-host name %s after domain appended"), srv->name, EC_MISC); 
 	  }
     }
   else if (option_bool(OPT_DHCP_FQDN))

@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2025 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2026 Simon Kelley
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -265,7 +265,7 @@ int create_helper(int event_fd, int err_fd, uid_t uid, gid_t gid, long max_fd)
 	}
       
       /* supplied data may just exceed normal buffer (unlikely) */
-      if ((data.hostname_len + data.ed_len + data.clid_len) > MAXDNAME && 
+      if ((data.hostname_len + data.ed_len + data.clid_len) > MAXDNAMESTR && 
 	  !(alloc_buff = buf = malloc(data.hostname_len + data.ed_len + data.clid_len)))
 	continue;
       
@@ -545,18 +545,12 @@ int create_helper(int event_fd, int err_fd, uid_t uid, gid_t gid, long max_fd)
 		close(pipeout[0]);
 	      else
 		{
-		  while (fgets(daemon->packet, daemon->packet_buff_sz, fp))
-		    {
-		      /* do not include new lines, log will append them */
-		      size_t len = strlen(daemon->packet);
-		      if (len > 0)
-			{
-			  --len;
-			  if (daemon->packet[len] == '\n')
-			    daemon->packet[len] = 0;
-			}
-		      send_event(event_fd, EVENT_SCRIPT_LOG, 0, daemon->packet);
-		    }
+		  char *line = NULL;
+		  size_t linesz = 0;
+		  
+		  while (get_line_alloc(fp, &line, &linesz))
+		    send_event(event_fd, EVENT_SCRIPT_LOG, 0, line);
+		    
 		  fclose(fp);
 		}
 	    }
@@ -761,9 +755,11 @@ static unsigned char *grab_extradata_lua(unsigned char *buf, unsigned char *end,
   if (!buf || (buf == end))
     return NULL;
 
-  for (next = buf; *next != 0; next++)
+  for (next = buf; ; next++)
     if (next == end)
       return NULL;
+    else if (*next == 0)
+      break;
   
   if (next != buf)
     {

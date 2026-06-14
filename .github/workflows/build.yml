@@ -32,7 +32,7 @@ jobs:
     steps:
       -
         name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd #v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 #v6.0.3
       -
         name: "Calculate required variables"
         id: variables
@@ -40,6 +40,16 @@ jobs:
           GIT_TAG=${{ github.event.release.tag_name }}
           # If GIT_TAG is set then GIT BRANCH should be "master", else set it from GITHUB_REF
           GIT_BRANCH=$([ -n "${GIT_TAG}" ] && echo "master" || echo "${GITHUB_REF#refs/*/}")
+          # Branch names may contain slashes (e.g.
+          # dependabot/npm_and_yarn/<dep>). The deploy target uses the branch
+          # name as a directory and only supports a single subdir level (sftp
+          # mkdir is not recursive), so collapse any slashes beyond the first
+          # into underscores.
+          if [[ "${GIT_BRANCH}" == */*/* ]]; then
+            first="${GIT_BRANCH%%/*}"            # text before the first slash
+            rest="${GIT_BRANCH#*/}"              # everything after the first slash
+            GIT_BRANCH="${first}/${rest//\//_}"  # keep the first slash, underscore the rest
+          fi
           echo "GIT_BRANCH=${GIT_BRANCH}" >> $GITHUB_OUTPUT
           echo "GIT_TAG=${GIT_TAG}" >> $GITHUB_OUTPUT
           echo "OUTPUT_DIR=${GIT_TAG:-${GIT_BRANCH}}" >> $GITHUB_OUTPUT
@@ -100,14 +110,14 @@ jobs:
     steps:
       -
         name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd #v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 #v6.0.3
       # QEMU should come before Buildx
       -
         name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a #v4.0.0
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 #v4.1.0
       -
         name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd #v4.0.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 #v4.1.0
       -
         name: Print directory contents
         shell: bash
@@ -271,14 +281,14 @@ jobs:
           files: |
             ftl_builds/*
       -
-        name: Pull docs repository to update configuation page from pihole.toml        
-        if: env.GIT_BRANCH == 'master' && env.DO_DEPLOY == 'true' && matrix.bin_name == 'pihole-FTL-amd64'        
+        name: Pull docs repository to update configuation page from pihole.toml
+        if: env.GIT_BRANCH == 'master' && env.DO_DEPLOY == 'true' && matrix.bin_name == 'pihole-FTL-amd64'
         run: |
           git clone https://github.com/pi-hole/docs.git docs-repo
-          python3 tools/pihole_toml_to_markdown.py ftl_builds/pihole.toml docs-repo/docs/ftldns/configfile.md          
+          python3 tools/pihole_toml_to_markdown.py ftl_builds/pihole.toml docs-repo/docs/ftldns/configfile.md
       -
         name: Create Pull Request to pi-hole/docs
-        if: env.GIT_BRANCH == 'master' && env.DO_DEPLOY == 'true' && matrix.bin_name == 'pihole-FTL-amd64'        
+        if: env.GIT_BRANCH == 'master' && env.DO_DEPLOY == 'true' && matrix.bin_name == 'pihole-FTL-amd64'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 #v8.1.1
         with:
           token: ${{ secrets.PRALOR_PULL_REQUESTS }}

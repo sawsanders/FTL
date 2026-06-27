@@ -135,7 +135,7 @@ components:
 
           On success, a new resource is created at `/groups/{name}`.
 
-          The `database_error` with message `UNIQUE constraint failed` error indicates that a group with the same name already exists.
+          The `database_error` with message `The item is already present` error indicates that a group with the same name already exists.
         requestBody:
           description: Callback payload
           content:
@@ -353,7 +353,7 @@ components:
               - item: "Children"
             errors:
               - item: "Garden"
-                error: "UNIQUE constraint failed: group.name"
+                error: "The item is already present"
   examples:
     groups:
       value:
@@ -398,7 +398,7 @@ components:
             error:
               key: "database_error"
               message: "Could not add to gravity database"
-              hint: "Group already exists (UNIQUE constraint failed)"
+              hint: "The item is already present"
             took: 0.003
 
   parameters:

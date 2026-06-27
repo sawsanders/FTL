@@ -164,7 +164,7 @@ components:
 
           On success, a new resource is created at `/clients/{client}`.
 
-          The `database_error` with message `UNIQUE constraint failed` error indicates that this client already exists.
+          The `database_error` with message `The item is already present` error indicates that this client already exists.
         requestBody:
           description: Callback payload
           content:
@@ -434,7 +434,7 @@ components:
               - item: "::1"
             errors:
               - item: "192.168.2.5"
-                error: "UNIQUE constraint failed: client.ip"
+                error: "The item is already present"
   examples:
     clients:
       value:
@@ -457,7 +457,7 @@ components:
             - item: "127.0.0.1"
           failed:
             - item: "127.0.0.2"
-              error: "UNIQUE constraint failed: clientlist.client"
+              error: "The item is already present"
     errors:
       uri_error:
         item_missing:
@@ -484,7 +484,7 @@ components:
             error:
               key: "database_error"
               message: "Could not add to gravity database"
-              hint: "Client already exists (UNIQUE constraint failed)"
+              hint: "The item is already present"
             took: 0.003
   parameters:
     client:

@@ -105,6 +105,16 @@ if [[ -n "${debug}" ]]; then
     fi
 fi
 
+# If we are asked to run tests, also build the tar parser regression harness.
+# It is gated behind a CMake option so ordinary builds do not produce it.
+if [[ -n "${test}" ]]; then
+    if [[ -n "${cmake_args}" ]]; then
+        cmake_args="${cmake_args} -DBUILD_TAR_REGRESSION=ON"
+    else
+        cmake_args="-DBUILD_TAR_REGRESSION=ON"
+    fi
+fi
+
 # If we are in dev mode, we want to build, install, restart, and tail the logs
 # by default
 if [[ -n "${dev}" ]]; then
@@ -170,7 +180,11 @@ fi
 mkdir -p "${builddir}"
 cd "${builddir}"
 if [[ -n ${cmake_args} ]]; then
-    cmake "${cmake_args}" ..
+    # Intentionally unquoted: cmake_args may hold several space-separated -D
+    # options (e.g. "-DA=1 -DB=2") that must reach CMake as separate arguments.
+    # Quoting would pass them as one -D value and silently drop all but the first.
+    # shellcheck disable=SC2086
+    cmake ${cmake_args} ..
 else
     cmake ..
 fi
@@ -194,6 +208,11 @@ if [[ -n "${install}" ]]; then
 else
     echo "Copying compiled pihole-FTL binary to repository root"
     cp pihole-FTL ../
+    # Copy the tar parser regression test binary alongside it so the
+    # "TAR parser regression harness" bats test can run it from the repo root
+    if [[ -f tar_regression ]]; then
+        cp tar_regression ../
+    fi
 fi
 
 # If we are asked to run tests, we do this here

@@ -177,7 +177,7 @@ components:
 
           On success, a new resource is created at `/domains/{type}/{kind}/{domain}`.
 
-          The `database_error` with message `UNIQUE constraint failed` error indicates that the same entry (`domain`, `type`, `kind`) already exists.
+          The `database_error` with message `The item is already present` error indicates that the same entry (`domain`, `type`, `kind`) already exists.
 
           When adding a regular expression, ensure the request body is properly JSON-escaped.
         requestBody:
@@ -462,7 +462,7 @@ components:
               - item: "example3.com"
             errors:
               - item: "example2.com"
-                error: "UNIQUE constraint failed: domainlist.domain"
+                error: "The item is already present"
   examples:
     domains:
       summary: Example domains
@@ -526,7 +526,7 @@ components:
             error:
               key: "database_error"
               message: "Could not add to gravity database"
-              hint: "Domain already exists (UNIQUE constraint failed)"
+              hint: "The item is already present"
             took: 0.003
       regex_error:
         invalid_regex:

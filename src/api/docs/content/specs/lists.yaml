@@ -145,7 +145,7 @@ components:
 
           On success, a new resource is created at `/lists/{list}`.
 
-          The `database_error` with message `UNIQUE constraint failed` error indicates that this list already exists.
+          The `database_error` with message `The item is already present` error indicates that this list already exists.
         parameters:
           - $ref: 'lists.yaml#/components/parameters/listtype'
         requestBody:
@@ -417,7 +417,7 @@ components:
               - item: "https://mirror1.malwaredomains.com/files/justdomains"
             errors:
               - item: "https://raw.githubusercontent.com/abc/def/master/hosts"
-                error: "UNIQUE constraint failed: adlist.address"
+                error: "The item is already present"
   examples:
     lists:
       value:
@@ -466,7 +466,7 @@ components:
             error:
               key: "database_error"
               message: "Could not add to gravity database"
-              hint: "List already exists (UNIQUE constraint failed)"
+              hint: "The item is already present"
             took: 0.003
   parameters:
     list:

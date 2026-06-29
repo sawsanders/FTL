@@ -185,7 +185,7 @@ jobs:
           path: '${{ matrix.bin_name }}*'
       -
         name: Generate artifact attestation
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 #v4.1.0
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 #v4.1.1
         # Skip attestation if ACTIONS_ID_TOKEN_REQUEST_URL env variable is not
         # available (e.g., PR originating from a fork)
         if: env.DO_DEPLOY == 'true' && env.ACTIONS_ID_TOKEN_REQUEST_URL != ''

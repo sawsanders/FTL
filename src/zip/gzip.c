@@ -22,6 +22,9 @@
 #endif
 #include <endian.h>
 
+#define GZIP_HEADER_SIZE 10u
+#define GZIP_FOOTER_SIZE 8u
+
 static int mz_uncompress2_raw(unsigned char *pDest, mz_ulong *pDest_len, const unsigned char *pSource, mz_ulong *pSource_len);
 
 static bool deflate_buffer(const unsigned char *buffer_uncompressed, const mz_ulong size_uncompressed,
@@ -111,7 +114,7 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
                     unsigned char **buffer_uncompressed, mz_ulong *size_uncompressed)
 {
 	// Check GZIP header (magic byte 1F 8B and compression algorithm deflate 08)
-	if(buffer_compressed[0] != 0x1F || buffer_compressed[1] != 0x8B)
+	if(size_compressed < (GZIP_HEADER_SIZE + GZIP_FOOTER_SIZE) || buffer_compressed[0] != 0x1F || buffer_compressed[1] != 0x8B)
 	{
 		log_warn("This is not a valid GZIP stream");
 		return false;
@@ -158,16 +161,20 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 		// XLEN: This contains the length of the extra field, in bytes.
 		uint16_t xlen = 0u;
 		for(unsigned int i = 0; i < 2; i++)
-			xlen |= buffer_compressed[10 + i] << (i * 8);
+			xlen |= buffer_compressed[GZIP_HEADER_SIZE + i] << (i * 8);
 		xlen = le16toh(xlen);
-		if(size_compressed < 12u + xlen)
+
+		const size_t extra_offset = GZIP_HEADER_SIZE + 2u;
+
+		// the extra fields should not overlap the CRC32/ISIZE fields
+		if(size_compressed < extra_offset + xlen + GZIP_FOOTER_SIZE)
 		{
 			log_warn("Invalid GZIP header");
 			return false;
 		}
 
 		// Move compressed data to the left
-		memmove(buffer_compressed + 10, buffer_compressed + 12 + xlen, size_compressed - (12 + xlen));
+		memmove(buffer_compressed + GZIP_HEADER_SIZE, buffer_compressed + extra_offset + xlen, size_compressed - (extra_offset + xlen));
 		size_compressed -= 2 + xlen;
 	}
 
@@ -190,12 +197,17 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 		//               original file name. This string may be
 		//               arbitrarily long. We ignore it.
 		//
-		size_t i = 10;
-		while(i < size_compressed && buffer_compressed[i] != 0)
+		size_t i = GZIP_HEADER_SIZE;
+		if(i >= size_compressed - GZIP_FOOTER_SIZE)
+		{
+			log_warn("GZIP file name field overruns into the footer");
+			return false;
+		}
+		while(i < size_compressed - GZIP_FOOTER_SIZE && buffer_compressed[i] != 0)
 		{
 			i++;
 		}
-		if(i == size_compressed)
+		if(i == size_compressed - GZIP_FOOTER_SIZE)
 		{
 			log_warn("File name is missing or invalid in GZIP header");
 			return false;
@@ -203,8 +215,8 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 		i++;
 
 		// Move compressed blocks to the beginning of the in buffer
-		memmove(buffer_compressed + 10, buffer_compressed + i, size_compressed - i);
-		size_compressed -= i - 10;
+		memmove(buffer_compressed + GZIP_HEADER_SIZE, buffer_compressed + i, size_compressed - i);
+		size_compressed -= i - GZIP_HEADER_SIZE;
 	}
 
 	// Skip file comment (if present)
@@ -226,12 +238,17 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 		//               comment about the file. This string may be
 		//               arbitrarily long. We ignore it.
 		//
-		size_t i = 10;
-		while(i < size_compressed && buffer_compressed[i] != 0)
+		size_t i = GZIP_HEADER_SIZE;
+		if(i >= size_compressed - GZIP_FOOTER_SIZE)
+		{
+			log_warn("GZIP file comment field overruns into the footer");
+			return false;
+		}
+		while(i < size_compressed - GZIP_FOOTER_SIZE && buffer_compressed[i] != 0)
 		{
 			i++;
 		}
-		if(i == size_compressed)
+		if(i == size_compressed - GZIP_FOOTER_SIZE)
 		{
 			log_warn("File comment is missing or invalid in GZIP header");
 			return false;
@@ -239,8 +256,8 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 		i++;
 
 		// Move compressed blocks to the beginning of the in
-		memmove(buffer_compressed + 10, buffer_compressed + i, size_compressed - i);
-		size_compressed -= i - 10;
+		memmove(buffer_compressed + GZIP_HEADER_SIZE, buffer_compressed + i, size_compressed - i);
+		size_compressed -= i - GZIP_HEADER_SIZE;
 	}
 
 	// Get the size of the uncompressed file from the GZIP footer (last 4
@@ -255,20 +272,20 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 		return false;
 	}
 
-	// Move compressed blocks 10 bytes to the left to remove the GZIP header
-	memmove(buffer_compressed, buffer_compressed + 10, size_compressed - 10);
-	size_compressed -= 10;
+	// Move compressed blocks GZIP_HEADER_SIZE bytes to the left to remove the GZIP header
+	memmove(buffer_compressed, buffer_compressed + GZIP_HEADER_SIZE, size_compressed - GZIP_HEADER_SIZE);
+	size_compressed -= GZIP_HEADER_SIZE;
 
 	// Extract checksum (stored in the first 4 of the last 8 bytes of the
 	// file)
 	uint32_t crc = 0u;
 	for(unsigned int i = 0; i < 4; i++)
-		crc |= (uint32_t)buffer_compressed[size_compressed - 8 + i] << (i * 8);
+		crc |= (uint32_t)buffer_compressed[size_compressed - GZIP_FOOTER_SIZE + i] << (i * 8);
 	crc = le32toh(crc);
 
 	// ZLIB trailer/footer is an Adler-32 checksum of the uncompressed data.
 	// We have to strip the uncompressed size from the GZIP footer.
-	size_compressed -= 8;
+	size_compressed -= GZIP_FOOTER_SIZE;
 
 	// Allocate memory for uncompressed file
 	*buffer_uncompressed = malloc(*size_uncompressed);
@@ -477,7 +494,7 @@ bool deflate_file(const char *infilename, const char *outfilename, bool verbose)
 		// Compressed size = size of compressed data
 		//                 + 10 bytes for GZIP header
 		//                 + 8 bytes for GZIP footer
-		const size_t csize = size_compressed - (2 + 4) + 10 + 8;
+		const size_t csize = size_compressed - (2 + 4) + GZIP_HEADER_SIZE + GZIP_FOOTER_SIZE;
 		double raw_size, comp_size;
 		char raw_prefix[2], comp_prefix[2];
 		format_memory_size(raw_prefix, size_uncompressed, &raw_size);

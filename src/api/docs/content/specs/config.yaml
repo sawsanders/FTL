@@ -5,7 +5,7 @@ components:
       get:
         summary: Get current configuration of your Pi-hole
         tags:
-          - "Pi-hole Configuration"
+          - "Pi-hole configuration"
         operationId: "get_config"
         description: |
           This API hook returns infos about the config of your Pi-hole.
@@ -34,7 +34,7 @@ components:
       patch:
         summary: Change configuration of your Pi-hole
         tags:
-          - "Pi-hole Configuration"
+          - "Pi-hole configuration"
         operationId: "patch_config"
         description: |
           This API hook allows to modify the config of your Pi-hole. This endpoint supports changing multiple properties at once when you specify several in the payload. See examples below.
@@ -79,7 +79,7 @@ components:
       get:
         summary: Get specific part of current configuration of your Pi-hole
         tags:
-          - "Pi-hole Configuration"
+          - "Pi-hole configuration"
         operationId: "get_config_elem"
         description: |
           This API hook returns infos about the requested subset of your Pi-hole's configuration.
@@ -90,6 +90,15 @@ components:
         responses:
           '200':
             description: OK
+            content:
+              application/json:
+                schema:
+                  allOf:
+                    - $ref: 'config.yaml#/components/schemas/config'
+                    - $ref: 'common.yaml#/components/schemas/took'
+                examples:
+                  config:
+                    $ref: 'config.yaml#/components/examples/config'
           '401':
             description: Unauthorized
             content:
@@ -102,7 +111,7 @@ components:
       put:
         summary: Add config array item
         tags:
-          - "Pi-hole Configuration"
+          - "Pi-hole configuration"
         operationId: "add_array_item"
         description: |
           *Note:* There will be no content on success.
@@ -137,7 +146,7 @@ components:
       delete:
         summary: Delete config array item
         tags:
-          - "Pi-hole Configuration"
+          - "Pi-hole configuration"
         operationId: "delete_array_item"
         description: |
           *Note:* There will be no content on success.
@@ -179,7 +188,7 @@ components:
       get:
         summary: Get special properties of your Pi-hole configuration
         tags:
-          - "Pi-hole Configuration"
+          - "Pi-hole configuration"
         operationId: "get_config_props"
         description: |
           This API hook returns a list of special properties in your Pi-hole configuration.

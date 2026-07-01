@@ -148,6 +148,36 @@ components:
                     - $ref: 'common.yaml#/components/errors/unauthorized'
                     - $ref: 'common.yaml#/components/schemas/took'
     direct:
+      get:
+        summary: List all clients
+        tags:
+          - "Client management"
+        operationId: "list_clients"
+        description: |
+          Returns the full list of clients configured on your Pi-hole.
+
+          This is the collection form of `GET /api/clients/{client}` (see `get_clients`)
+          and returns the same array schema without requiring a `{client}` path parameter.
+        responses:
+          '200':
+            description: OK
+            content:
+              application/json:
+                schema:
+                  allOf:
+                    - $ref: 'clients.yaml#/components/schemas/clients/get'
+                    - $ref: 'common.yaml#/components/schemas/took'
+                examples:
+                  clients:
+                    $ref: 'clients.yaml#/components/examples/clients'
+          '401':
+            description: Unauthorized
+            content:
+              application/json:
+                schema:
+                  allOf:
+                    - $ref: 'common.yaml#/components/errors/unauthorized'
+                    - $ref: 'common.yaml#/components/schemas/took'
       post:
         summary: Add new client
         tags:

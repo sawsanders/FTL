@@ -129,6 +129,38 @@ components:
                     - $ref: 'common.yaml#/components/errors/unauthorized'
                     - $ref: 'common.yaml#/components/schemas/took'
     direct:
+      get:
+        summary: List all lists
+        parameters:
+          - $ref: 'lists.yaml#/components/parameters/listtype_optional'
+        tags:
+          - "List management"
+        operationId: "list_lists"
+        description: |
+          Returns the full list of subscribed lists configured on your Pi-hole.
+
+          This is the collection form of `GET /api/lists/{list}` (see `get_lists`)
+          and returns the same array schema without requiring a `{list}` path parameter.
+        responses:
+          '200':
+            description: OK
+            content:
+              application/json:
+                schema:
+                  allOf:
+                    - $ref: 'lists.yaml#/components/schemas/lists/get'
+                    - $ref: 'common.yaml#/components/schemas/took'
+                examples:
+                  lists:
+                    $ref: 'lists.yaml#/components/examples/lists'
+          '401':
+            description: Unauthorized
+            content:
+              application/json:
+                schema:
+                  allOf:
+                    - $ref: 'common.yaml#/components/errors/unauthorized'
+                    - $ref: 'common.yaml#/components/schemas/took'
       post:
         summary: Add new list
         tags:

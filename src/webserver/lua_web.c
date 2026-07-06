@@ -134,9 +134,12 @@ int request_handler(struct mg_connection *conn, void *cbdata)
 		// This is not the login page - check if the user is authenticated
 		if(!authorized)
 		{
-			// User is not authenticated, redirect to login page
-			log_web("Authentication required, redirecting to %s%slogin",
-			        config.webserver.paths.prefix.v.s, config.webserver.paths.webhome.v.s);
+			// User is not authenticated, redirect to login page.
+			// Log at debug level only: this fires on every unauthenticated
+			// request and would otherwise let a flood of requests inflate
+			// the log file (and exhaust the disk).
+			log_debug(DEBUG_API, "Authentication required, redirecting to %s%slogin",
+			          config.webserver.paths.prefix.v.s, config.webserver.paths.webhome.v.s);
 			ftl_http_redirect(conn, 302, "%s%slogin",
 			                  config.webserver.paths.prefix.v.s,
 			                  config.webserver.paths.webhome.v.s);

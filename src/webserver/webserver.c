@@ -304,7 +304,28 @@ static int log_http_access(const struct mg_connection *conn, const char *message
 	if(!config.debug.api.v.b)
 		return 1;
 
-	log_web("ACCESS: %s", message);
+	// Never write the access log into the web server's document root. The
+	// log line contains attacker-controlled request data (e.g. the
+	// User-Agent header) and, if the log file lives inside the webroot, it
+	// could be served - and, for a path matching the Lua server-page
+	// pattern, executed - by the web server itself. This is a runtime
+	// backstop for the config validator (validate_webserver_logfile) that
+	// also catches a single config change setting both paths at once.
+	const char *logfile = config.files.log.webserver.v.s;
+	const char *webroot = config.webserver.paths.webroot.v.s;
+	if(logfile != NULL && webroot != NULL && webroot[0] != '\0' &&
+	   strncmp(logfile, webroot, strlen(webroot)) == 0)
+		return 1;
+
+	// Escape the line before writing it: it contains attacker-controlled
+	// data, so logging it verbatim would allow log injection (forged log
+	// lines via CR/LF and other control characters).
+	char *escaped = escape_string(message);
+	if(escaped != NULL)
+	{
+		log_web("ACCESS: %s", escaped);
+		free(escaped);
+	}
 
 	return 1;
 }
@@ -818,6 +839,20 @@ void http_init(void)
 		}
 		strncpy(key, opt, key_len);
 		key[key_len] = '\0';
+
+		// Reject attempts to override the embedded web server's Lua
+		// options via advancedOpts. Pi-hole configures its own Lua
+		// handling internally, and options such as lua_background_script
+		// or lua_preload_file execute arbitrary code - allowing them here
+		// would turn this trusted-admin passthrough into a code execution
+		// vector (an authenticated user could point the web server at a
+		// script they control).
+		if(strncasecmp(key, "lua_", 4) == 0)
+		{
+			log_warn("Ignoring disallowed webserver.advancedOpts option \"%s\": lua_* options are not permitted", key);
+			free(key);
+			continue;
+		}
 
 		char *value = strdup(equal_sign + 1);
 		if (value == NULL) {

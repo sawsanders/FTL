@@ -1378,7 +1378,7 @@ void initConfig(struct config *conf)
 	conf->files.log.webserver.t = CONF_STRING;
 	conf->files.log.webserver.f = FLAG_RESTART_FTL;
 	conf->files.log.webserver.d.s = (char*)"/var/log/pihole/webserver.log";
-	conf->files.log.webserver.c = validate_filepath;
+	conf->files.log.webserver.c = validate_webserver_logfile;
 
 	// struct misc
 	conf->misc.privacylevel.k = "misc.privacylevel";

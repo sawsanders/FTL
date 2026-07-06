@@ -254,7 +254,10 @@ int check_client_auth(struct ftl_conn *api, const bool is_api)
 		{
 			// Check if session is known but expired
 			if(auth_data[i].valid_until < now)
+			{
 				expired = true;
+				break;
+			}
 
 			// Check CSRF if authentiating via cookie
 			if(need_csrf &&

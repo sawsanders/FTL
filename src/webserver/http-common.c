@@ -110,10 +110,28 @@ int send_json_error_free(struct ftl_conn *api, const int code,
 
 	if(log)
 	{
-		if(hint != NULL)
-			log_warn("API: %s (key: %s, hint: %s)", message, key, hint);
+		// Client errors (4xx) are routinely triggered by unauthenticated
+		// or malformed requests. Logging them at WARNING level on every
+		// request lets an attacker inflate the log file (and exhaust the
+		// disk, e.g. an SD card) simply by flooding invalid requests, so
+		// only record them at debug level. Rate-limit responses (429) are
+		// kept at WARNING as a bounded, security-relevant signal (brute-
+		// force attempts), as are genuine server errors (5xx).
+		if(code >= 500 || code == 429)
+		{
+			if(hint != NULL)
+				log_warn("API: %s (key: %s, hint: %s)", message, key, hint);
+			else
+				log_warn("API: %s (key: %s)", message, key);
+		}
+		else if(hint != NULL)
+		{
+			log_debug(DEBUG_API, "API: %s (key: %s, hint: %s)", message, key, hint);
+		}
 		else
-			log_warn("API: %s (key: %s)", message, key);
+		{
+			log_debug(DEBUG_API, "API: %s (key: %s)", message, key);
+		}
 	}
 
 	cJSON *error = JSON_NEW_OBJECT();

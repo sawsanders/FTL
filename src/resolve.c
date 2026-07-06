@@ -38,7 +38,7 @@
 
 // Function Prototypes
 static size_t nameToDNS(unsigned char *dns, const size_t dnslen, const char *host, const size_t hostlen) __attribute__((nonnull(1,3)));
-static unsigned char *nameFromDNS(unsigned char *reader, unsigned char *buffer, uint16_t *count) __attribute__((malloc)) __attribute__((nonnull(1,2,3)));
+static unsigned char *nameFromDNS(unsigned char *reader, unsigned char *buffer, const unsigned char *end, uint16_t *count) __attribute__((malloc)) __attribute__((nonnull(1,2,3,4)));
 
 // Avoid "error: packed attribute causes inefficient alignment for ..." on ARM32
 // builds due to the use of __attribute__((packed)) in the following structs
@@ -391,8 +391,10 @@ static bool ngethostbyname(const int sock, const bool tcp, struct sockaddr_in *d
 		}
 		prefix = ntohs(prefix);
 
-		// Sanity check the length of the message
-		if(prefix > sizeof(buf))
+		// Sanity check the length of the message. Reject prefix == sizeof(buf)
+		// as well, otherwise the bzero(buf, prefix + 1) below writes one byte
+		// past the end of the buffer.
+		if(prefix >= sizeof(buf))
 		{
 			log_err("Received TCP DNS reply is too long (%u bytes)", prefix);
 			log_resolve_info(host, config.dns.port.v.u16, tcp);
@@ -430,16 +432,42 @@ static bool ngethostbyname(const int sock, const bool tcp, struct sockaddr_in *d
 	uint16_t stop = 0;
 	bool have_name = false;
 	struct RES_RECORD answers[20] = { 0 };
+	const unsigned char *bufend = buf + sizeof(buf);
 	for(uint16_t i = 0; i < min(ntohs(dns.ans_count), ArraySize(answers)); i++)
 	{
-		answers[i].name = nameFromDNS(reader, buf, &stop);
+		// Ensure the read pointer still points within the receive
+		// buffer before parsing the next answer's name
+		if(reader < buf || reader >= bufend)
+			break;
+
+		answers[i].name = nameFromDNS(reader, buf, bufend, &stop);
+		if(answers[i].name == NULL)
+			break;
 		reader = reader + stop;
+
+		// The fixed-size resource record header must fit entirely
+		// within the receive buffer before we cast and dereference it
+		if(reader < buf || reader + sizeof(struct R_DATA) > bufend)
+		{
+			free(answers[i].name);
+			break;
+		}
 
 		answers[i].resource = (struct R_DATA*)(reader);
 		reader = reader + sizeof(struct R_DATA);
 
 		// Read the answer and convert from network to host representation
-		answers[i].rdata = nameFromDNS(reader, buf, &stop);
+		if(reader < buf || reader >= bufend)
+		{
+			free(answers[i].name);
+			break;
+		}
+		answers[i].rdata = nameFromDNS(reader, buf, bufend, &stop);
+		if(answers[i].rdata == NULL)
+		{
+			free(answers[i].name);
+			break;
+		}
 		reader = reader + stop;
 
 		// We only care about PTR answers and ignore all others
@@ -492,7 +520,7 @@ static bool ngethostbyname(const int sock, const bool tcp, struct sockaddr_in *d
 // Convert hostname from network to host representation
 // This routine supports DNS compression pointers
 // 3www6google3com -> www.google.com
-static u_char * __attribute__((malloc)) __attribute__((nonnull(1,2,3))) nameFromDNS(unsigned char *reader, unsigned char *buffer, uint16_t *count)
+static u_char * __attribute__((malloc)) __attribute__((nonnull(1,2,3,4))) nameFromDNS(unsigned char *reader, unsigned char *buffer, const unsigned char *end, uint16_t *count)
 {
 	const size_t MAXNAMELEN = 256;
 	unsigned char *name = calloc(MAXNAMELEN, sizeof(char));
@@ -502,7 +530,7 @@ static u_char * __attribute__((malloc)) __attribute__((nonnull(1,2,3))) nameFrom
 		return NULL;
 	}
 
-	unsigned int p = 0, jumped = 0;
+	unsigned int p = 0, jumped = 0, jumps = 0;
 	// Initialize count
 	*count = 1;
 
@@ -513,10 +541,17 @@ static u_char * __attribute__((malloc)) __attribute__((nonnull(1,2,3))) nameFrom
 	// Instead, each label is preceded by a byte containing its length, and
 	// the name is terminated by a zero-length label representing the root
 	// zone.
-	while(*reader != 0 && p < MAXNAMELEN - 2)
+	while(reader < end && *reader != 0 && p < MAXNAMELEN - 2)
 	{
 		if(*reader >= 0xC0)
 		{
+			// A compression pointer is two bytes; the second byte
+			// must also lie within the buffer before we dereference it
+			if(reader + 1 >= end)
+			{
+				free(name);
+				return NULL;
+			}
 			// RFC 1035, Section 4.1.4: Message compression
 			//
 			// A label can be up to 63 bytes long; if the length
@@ -548,6 +583,15 @@ static u_char * __attribute__((malloc)) __attribute__((nonnull(1,2,3))) nameFrom
 				free(name);
 				return NULL;
 			}
+			// Guard against self-referential or cyclic compression
+			// pointers, which would otherwise spin here forever (p does
+			// not advance when following a pointer)
+			if(++jumps > MAXNAMELEN)
+			{
+				log_err("Too many DNS compression pointer jumps, aborting");
+				free(name);
+				return NULL;
+			}
 			reader = buffer + offset - 1;
 			jumped = 1; // We have jumped to another location so counting won't go up
 		}
@@ -574,6 +618,15 @@ static u_char * __attribute__((malloc)) __attribute__((nonnull(1,2,3))) nameFrom
 	for(; i < strlen((const char*)name); i++)
 	{
 		p = name[i];
+		// A DNS label is at most 63 bytes; a larger length byte is
+		// malformed wire data. Bail out rather than letting i walk past
+		// the buffer (out-of-bounds read of name[i+1] and write of
+		// name[i] = '.').
+		if(p >= 64 || i + p >= MAXNAMELEN)
+		{
+			name[i] = '\0';
+			break;
+		}
 		for(unsigned j = 0; j < p; j++)
 		{
 			name[i] = name[i + 1];
@@ -753,6 +806,10 @@ static size_t resolveAndAddHostname(const int udp_sock, struct sockaddr_in *dest
 	{
 		log_debug(DEBUG_RESOLVER, " ---> \"\" (configured to not resolve host name)");
 
+		// Not resolving names is intentional, not a failure
+		if(success != NULL)
+			*success = true;
+
 		// Return fixed position of empty string
 		return 0;
 	}
@@ -784,6 +841,11 @@ static size_t resolveAndAddHostname(const int udp_sock, struct sockaddr_in *dest
 		if(getNameFromIP(NULL, newname, ipaddr))
 			log_debug(DEBUG_RESOLVER, " ---> \"%s\" (provided by database)", newname);
 	}
+
+	// Report whether we actually obtained a host name so the caller can
+	// keep the old name and retry later when resolution failed
+	if(success != NULL)
+		*success = newname[0] != '\0';
 
 	// Only store new newname if it is valid and differs from oldname
 	// We do not need to check for oldname == NULL as names are

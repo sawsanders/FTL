@@ -1162,8 +1162,10 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 
 	bool blockDomain = false;
 	// Check if this should be blocked only for active queries
-	// (skipped for internally generated ones, e.g., DNSSEC)
-	if(!internal_query && querytype != TYPE_NONE)
+	// (skipped for internally generated ones, e.g., DNSSEC). Guard against
+	// query == NULL, which the getQuery() re-fetch after find_mac() above
+	// may yield if SHM was remapped/recycled while we were unlocked.
+	if(query != NULL && !internal_query && querytype != TYPE_NONE)
 	{
 		PERF_START(_pcb);
 		blockDomain = FTL_check_blocking(domainString, query, client, domain, dns_cache_entry);
@@ -1171,7 +1173,8 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	}
 
 	// Store query in database
-	query->flags.database.changed = true;
+	if(query != NULL)
+		query->flags.database.changed = true;
 
 	PERF_END(_pnq, PERF_STAT_NEW_QUERY);
 	// Release thread lock
@@ -1390,7 +1393,11 @@ static void check_pihole_PTR(char *domain)
 	{
 		log_debug(DEBUG_EXTRA, "Known PTR record %p: %s -> %s (next = %p)", ptr, ptr->name, ptr->ptr, ptr->next);
 
-		if(ptr->name != NULL && strcmp(ptr->name, domain) == 0)
+		// DNS names are case-insensitive (RFC 4343), so compare case-
+		// insensitively. A case-sensitive match would let a client add an
+		// unbounded number of near-duplicate PTR records for the same
+		// address by varying the case of the query name.
+		if(ptr->name != NULL && strcasecmp(ptr->name, domain) == 0)
 		{
 			// We already have a PTR record for this address
 			log_debug(DEBUG_QUERIES, "PTR record for %s exists", domain);
@@ -3863,6 +3870,11 @@ void FTL_TCP_worker_created(const int confd)
 		// in debug mode
 		return;
 	}
+
+	// This runs in the freshly forked TCP worker process. Drop the cached
+	// lock-owner PID/TID inherited from the parent before we take any SHM
+	// lock, otherwise is_our_lock() would compare against the parent's IDs.
+	reset_lock_owner_cache();
 
 	// Print this if debugging is enabled
 	if(config.debug.queries.v.b)

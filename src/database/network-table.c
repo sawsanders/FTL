@@ -821,9 +821,12 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 
 		// Get hostname and IP address of this client
 		char hostname[MAXHOSTNAMELEN], ipaddr[INET6_ADDRSTRLEN], interface[MAXIFACESTRLEN];
-		strncpy(ipaddr, getstr(client->ippos), sizeof(ipaddr));
-		strncpy(hostname, getstr(client->namepos), sizeof(hostname));
-		strncpy(interface, getstr(client->ifacepos), sizeof(interface));
+		strncpy(ipaddr, getstr(client->ippos), sizeof(ipaddr) - 1);
+		ipaddr[sizeof(ipaddr) - 1] = '\0';
+		strncpy(hostname, getstr(client->namepos), sizeof(hostname) - 1);
+		hostname[sizeof(hostname) - 1] = '\0';
+		strncpy(interface, getstr(client->ifacepos), sizeof(interface) - 1);
+		interface[sizeof(interface) - 1] = '\0';
 
 		// Skip if already handled above (first check against clients_array_size as we might have added
 		// more clients to FTL's memory herein (those known only from the database))
@@ -837,24 +840,37 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 		else
 			log_debug(DEBUG_ARP, "Network table: %s NOT known through ARP/neigh cache", ipaddr);
 
+		// Snapshot the client fields we need before the loop starts releasing
+		// the SHM lock around the blocking DB/file work below. While unlocked
+		// the client slot may be recycled (getClient() then returns NULL) or
+		// even reused by a different client, so a re-fetched pointer can be
+		// NULL or valid-but-wrong. Reading from this snapshot avoids both a
+		// NULL dereference and cross-client contamination; the pointer is only
+		// re-fetched (and NULL-checked) where we must write back to it.
+		const char snap_hwlen = client->hwlen;
+		unsigned char snap_hwaddr[6] = { 0 };
+		if(snap_hwlen == 6)
+			memcpy(snap_hwaddr, client->hwaddr, sizeof(snap_hwaddr));
+		const time_t snap_lastQuery = client->lastQuery;
+		const time_t snap_firstSeen = client->firstSeen;
+		const unsigned int snap_numQueries = client->count;
+		const unsigned int snap_numQueriesARP = client->numQueriesARP;
+
 		//
 		// Variant 1: Try to find a device with an EDNS(0)-provided hardware address
 		//
 		int dbID = DB_NODATA;
-		if(client->hwlen == 6)
+		if(snap_hwlen == 6)
 		{
 			snprintf(hwaddr, sizeof(hwaddr), "%02X:%02X:%02X:%02X:%02X:%02X",
-			         client->hwaddr[0], client->hwaddr[1],
-			         client->hwaddr[2], client->hwaddr[3],
-			         client->hwaddr[4], client->hwaddr[5]);
+			         snap_hwaddr[0], snap_hwaddr[1],
+			         snap_hwaddr[2], snap_hwaddr[3],
+			         snap_hwaddr[4], snap_hwaddr[5]);
 			hwaddr[6*2+5] = '\0';
 
 			unlock_shm();
 			dbID = find_device_by_hwaddr(db, hwaddr);
 			lock_shm();
-
-			// Reacquire client pointer (if may have changed when unlocking above)
-			client = getClient(clientID, true);
 
 			if(dbID >= 0)
 				log_debug(DEBUG_ARP, "Network table: Client with MAC %s is network ID %i", hwaddr, dbID);
@@ -868,9 +884,6 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 			unlock_shm();
 			dbID = find_device_by_recent_ip(db, ipaddr);
 			lock_shm();
-
-			// Reacquire client pointer (if may have changed when unlocking above)
-			client = getClient(clientID, true);
 
 			if(dbID > DB_NODATA)
 			{
@@ -933,9 +946,6 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 						dbID = find_device_by_hwaddr(db, hwaddr);
 						lock_shm();
 
-						// Reacquire client pointer (it may have changed when unlocking above)
-						client = getClient(clientID, true);
-
 						if(dbID >= 0)
 							log_debug(DEBUG_ARP, "Network table: Client with MAC %s is network ID %i", hwaddr, dbID);
 						dhcp_lease = true;
@@ -959,9 +969,6 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 			dbID = find_device_by_mock_hwaddr(db, ipaddr);
 			lock_shm();
 
-			// Reacquire client pointer (if may have changed when unlocking above)
-			client = getClient(clientID, true);
-
 			if(dbID > DB_NODATA)
 			{
 				log_debug(DEBUG_ARP, "Network table: Client with IP %s has no MAC info but is known as mock-hwaddr client with network ID %i",
@@ -976,7 +983,8 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 
 		if(dbID == DB_FAILED)
 		{
-			// SQLite error
+			// SQLite error - release the SHM lock still held here
+			unlock_shm();
 			break;
 		}
 
@@ -984,57 +992,51 @@ static bool add_FTL_clients_to_network_table(sqlite3 *db, const enum arp_status 
 		else if(dbID == DB_NODATA)
 		{
 			char macVendor[MAXVENDORLEN] = { 0 };
-			if(client->hwlen == 6 || dhcp_lease)
+			if(snap_hwlen == 6 || dhcp_lease)
 			{
 				// Normal client, MAC was likely obtained from EDNS(0) data
 				// or from dhcp lease
 				unlock_shm();
 				getMACVendor(hwaddr, macVendor);
 				lock_shm();
-
-				// Reacquire client pointer (if may have changed when unlocking above)
-				client = getClient(clientID, true);
 			}
 
 			log_debug(DEBUG_ARP, "Network table: Creating new FTL device MAC = %s, IP = %s, hostname = \"%s\", vendor = \"%s\", interface = \"%s\"",
 			          hwaddr, ipaddr, hostname, macVendor, interface);
 
-			// Add new device to database
-			const time_t lastQuery = client->lastQuery;
-			const time_t firstSeen = client->firstSeen;
-			const unsigned int numQueries = client->count;
+			// Add new device to database (from the snapshot taken above)
 			unlock_shm();
-			if(!insert_netDB_device(db, hwaddr, firstSeen, lastQuery, numQueries, macVendor, &dbID))
+			if(!insert_netDB_device(db, hwaddr, snap_firstSeen, snap_lastQuery, snap_numQueries, macVendor, &dbID))
 				break;
 
 			lock_shm();
 
-			// Reacquire client pointer (if may have changed when unlocking above)
+			// Reacquire client pointer and reset the ARP counter only if the
+			// slot is still valid (it may have been recycled while unlocked)
 			client = getClient(clientID, true);
-
-			// Reset client counter
-			client->numQueriesARP = 0;
+			if(client != NULL)
+				client->numQueriesARP = 0;
 		}
 		else	// Device already in database
 		{
 			log_debug(DEBUG_ARP, "Network table: Updating existing FTL device MAC = %s, IP = %s, hostname = \"%s\", interface = \"%s\"",
 			          hwaddr, ipaddr, hostname, interface);
 
-			// Update timestamp of last query if applicable
-			const time_t lastQuery = client->lastQuery;
-			const unsigned int numQueriesARP = client->numQueriesARP;
+			// Update timestamp and query count from the snapshot taken above
 			unlock_shm();
-			if(!update_netDB_lastQuery(db, dbID, lastQuery))
+			if(!update_netDB_lastQuery(db, dbID, snap_lastQuery))
 				break;
 
 			// Update number of queries if applicable
-			if(!update_netDB_numQueries(db, dbID, numQueriesARP))
+			if(!update_netDB_numQueries(db, dbID, snap_numQueriesARP))
 				break;
 
 			lock_shm();
-			// Reacquire client pointer (if may have changed when unlocking above)
+			// Reacquire client pointer and reset the ARP counter only if the
+			// slot is still valid (it may have been recycled while unlocked)
 			client = getClient(clientID, true);
-			client->numQueriesARP = 0;
+			if(client != NULL)
+				client->numQueriesARP = 0;
 		}
 
 		unlock_shm();

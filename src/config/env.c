@@ -200,12 +200,18 @@ static void invalid_enum_item(const char *envvar, struct conf_item *conf_item, s
 	char *allowed_values = cJSON_PrintUnformatted(allowed_items);
 	char *escaped_value = escape_json(envvar);
 
-	// Calculate the size of the error message
-	asprintf(&item->error, "= %s is invalid, allowed options are: %s",
-	         escaped_value, allowed_values);
+	// Build the error message. Mark it as allocated so printFTLenv()
+	// actually frees it again instead of leaking it on every reload.
+	if(asprintf(&item->error, "= %s is invalid, allowed options are: %s",
+	            escaped_value ? escaped_value : "(null)",
+	            allowed_values ? allowed_values : "(null)") > 0)
+		item->error_allocated = true;
+	else
+		item->error = NULL;
 
 	free(escaped_value);
 	free(allowed_values);
+	cJSON_Delete(allowed_items);
 }
 
 bool __attribute__((nonnull(1,2,3))) readEnvValue(struct conf_item *conf_item, struct config *newconf, cJSON *forced_vars, bool *reset)
@@ -220,9 +226,12 @@ bool __attribute__((nonnull(1,2,3))) readEnvValue(struct conf_item *conf_item, s
 
 		// Check if this was a forced setting before
 		// If so, we revert the config option to default
-		for(int i = 0; i < cJSON_GetArraySize(forced_vars); i++)
+		// forced_vars is declared nonnull, so walk the list directly:
+		// cJSON_ArrayForEach() compares it to NULL, which trips
+		// -Werror=nonnull-compare.
+		for(cJSON *forced = forced_vars->child; forced != NULL; forced = forced->next)
 		{
-			const char *forced_var = cJSON_GetArrayItem(forced_vars, i)->valuestring;
+			const char *forced_var = forced->valuestring;
 			if(strcmp(forced_var, conf_item->k) == 0)
 			{
 				log_info("Resetting %s to default (not forced anymore)", conf_item->k);
@@ -261,6 +270,19 @@ bool __attribute__((nonnull(1,2,3))) readEnvValue(struct conf_item *conf_item, s
 	const char *envvar = item != NULL ? item->value : NULL;
 
 	log_debug(DEBUG_CONFIG, "ENV %s = %s", conf_item->e, envvar);
+
+	// Snapshot the previous value and type before the type switch commits
+	// the new value into conf_item->v. If the validator below rejects the
+	// new value, we revert to this snapshot so the rejected value never
+	// reaches the generated config. Owned members (allocated string, JSON
+	// array) are deep-copied so the snapshot stays valid even though the
+	// switch frees/replaces the live value.
+	const enum conf_type old_t = conf_item->t;
+	union conf_value old_v = conf_item->v;
+	if(old_t == CONF_STRING_ALLOCATED)
+		old_v.s = conf_item->v.s != NULL ? strdup(conf_item->v.s) : NULL;
+	else if(old_t == CONF_JSON_STRING_ARRAY)
+		old_v.json = cJSON_Duplicate(conf_item->v.json, true);
 
 	switch(conf_item->t)
 	{
@@ -607,12 +629,37 @@ bool __attribute__((nonnull(1,2,3))) readEnvValue(struct conf_item *conf_item, s
 	if(conf_item->c != NULL && !conf_item->c(&conf_item->v, conf_item->k, errbuf))
 	{
 		log_debug(DEBUG_CONFIG, "Config item validation failed for %s: %s", conf_item->k, errbuf);
+
+		// The validator rejected the newly committed value. Free it and
+		// revert to the snapshot taken before the type switch so the
+		// rejected value never reaches the generated config.
+		if(conf_item->t == CONF_STRING_ALLOCATED)
+		{
+			free(conf_item->v.s);
+		}
+		else if(conf_item->t == CONF_JSON_STRING_ARRAY)
+		{
+			cJSON_Delete(conf_item->v.json);
+		}
+		conf_item->v = old_v;
+		conf_item->t = old_t;
+
 		item->error = strdup(errbuf);
 		item->error_allocated = true;
 		item->valid = false;
 		return false;
 	}
 
+	// Validation passed: release the owned snapshot copy as the new value
+	// is now committed and owns its own memory
+	if(old_t == CONF_STRING_ALLOCATED)
+	{
+		free(old_v.s);
+	}
+	else if(old_t == CONF_JSON_STRING_ARRAY)
+	{
+		cJSON_Delete(old_v.json);
+	}
 
 	log_debug(DEBUG_CONFIG, "Env var %s passed validation successfully", conf_item->k);
 

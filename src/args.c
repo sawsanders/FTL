@@ -868,6 +868,14 @@ void parse_args(int argc, char *argv[])
 			arg[0] = "";
 			arg[1] = "--test";
 			log_ctrl(false, true);
+			// Signal dnsmasq's die() to exit() instead of trying to
+			// jump back into FTL's main() via longjmp(exit_jmp, ...).
+			// exit_jmp is only initialized (setjmp) once we reach
+			// main(), which never happens on this early-exit path, so
+			// a config read error (e.g., permission denied) would
+			// otherwise longjmp through an uninitialized jmp_buf and
+			// crash (see https://github.com/pi-hole/FTL/issues/2924).
+			only_testing = true;
 			exit(main_dnsmasq(2, (char**)arg));
 		}
 
@@ -883,6 +891,9 @@ void parse_args(int argc, char *argv[])
 			arg[1] = filename;
 			arg[2] = "--test";
 			log_ctrl(false, true);
+			// See note above: ensure die() exit()s cleanly instead of
+			// longjmp()ing through an uninitialized exit_jmp.
+			only_testing = true;
 			exit(main_dnsmasq(3, (char**)arg));
 		}
 

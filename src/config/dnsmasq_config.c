@@ -90,21 +90,31 @@ static bool test_dnsmasq_config(char errbuf[ERRBUF_SIZE])
 		// Read readirected STDERR until EOF
 		if(errbuf != NULL)
 		{
-			// We are only interested in the last pipe line
-			while(read(pipefd[0], errbuf, ERRBUF_SIZE) > 0)
-			{
-				// Remove initial newline character (if present)
-				if(errbuf[0] == '\n')
-					memmove(errbuf, &errbuf[1], ERRBUF_SIZE-1);
-				// Strip newline character (if present)
-				if(errbuf[strlen(errbuf)-1] == '\n')
-					errbuf[strlen(errbuf)-1] = '\0';
-				// Replace any possible internal newline characters by spaces
-				char *ptr = errbuf;
-				while((ptr = strchr(ptr, '\n')) != NULL)
-					*ptr = ' ';
-				log_debug(DEBUG_CONFIG, "dnsmasq pipe: %s", errbuf);
-			}
+			// dnsmasq may deliver its output in several reads (observed on
+			// slower architectures such as RISC-V). We are only interested
+			// in the last pipe line, but reading one chunk at a time and
+			// keeping the last read would let a trailing read (e.g. a lone
+			// newline) discard the meaningful error captured earlier and
+			// leave an empty message. Accumulate everything first, then keep
+			// the last non-empty line.
+			size_t total = 0;
+			ssize_t nread;
+			while(total < ERRBUF_SIZE - 1 &&
+			      (nread = read(pipefd[0], errbuf + total, ERRBUF_SIZE - 1 - total)) > 0)
+				total += (size_t)nread;
+			errbuf[total] = '\0';
+
+			// Strip trailing newline characters
+			while(total > 0 && errbuf[total - 1] == '\n')
+				errbuf[--total] = '\0';
+
+			// Keep only the last line: drop everything up to and including
+			// the last remaining newline
+			char *last = strrchr(errbuf, '\n');
+			if(last != NULL)
+				memmove(errbuf, last + 1, strlen(last + 1) + 1);
+
+			log_debug(DEBUG_CONFIG, "dnsmasq pipe: %s", errbuf);
 		}
 
 		// Wait until child has exited to get its return code
@@ -341,10 +351,9 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 	if(cJSON_GetArraySize(conf->dns.upstreams.v.json) > 0)
 	{
 		fputs("# List of upstream DNS server\n", pihole_conf);
-		const int n = cJSON_GetArraySize(conf->dns.upstreams.v.json);
-		for(int i = 0; i < n; i++)
+		cJSON *server = NULL;
+		cJSON_ArrayForEach(server, conf->dns.upstreams.v.json)
 		{
-			cJSON *server = cJSON_GetArrayItem(conf->dns.upstreams.v.json, i);
 			if(server != NULL && cJSON_IsString(server))
 				fprintf(pihole_conf, "server=%s\n", server->valuestring);
 		}
@@ -405,16 +414,16 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 
 	if(conf->dns.domainNeeded.v.b)
 	{
-		fputs("# Add the domain to simple names (without a period) in /etc/hosts in\n", pihole_conf);
-		fputs("# the same way as for DHCP-derived names\n", pihole_conf);
+		fputs("# Never forward A or AAAA queries for plain names, without dots or\n", pihole_conf);
+		fputs("# domain parts, to upstream nameservers\n", pihole_conf);
 		fputs("domain-needed\n", pihole_conf);
 		fputs("\n", pihole_conf);
 	}
 
 	if(conf->dns.expandHosts.v.b)
 	{
-		fputs("# Never forward A or AAAA queries for plain names, without dots or\n", pihole_conf);
-		fputs("# domain parts, to upstream nameservers\n", pihole_conf);
+		fputs("# Add the domain to simple names (without a period) in /etc/hosts in\n", pihole_conf);
+		fputs("# the same way as for DHCP-derived names\n", pihole_conf);
 		fputs("expand-hosts\n", pihole_conf);
 		fputs("\n", pihole_conf);
 	}
@@ -490,14 +499,18 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 
 	// Add upstream DNS servers for reverse lookups
 	bool revServer_domain = false, revServer_homearpa = false, revServer_internal = false;
-	const unsigned int revServers = cJSON_GetArraySize(conf->dns.revServers.v.json);
-	for(unsigned int i = 0; i < revServers; i++)
+	unsigned int i = 0;
+	cJSON *revServer = NULL;
+	cJSON_ArrayForEach(revServer, conf->dns.revServers.v.json)
 	{
-		cJSON *revServer = cJSON_GetArrayItem(conf->dns.revServers.v.json, i);
-		if(revServer == NULL || !cJSON_IsString(revServer))
+		// 0-based index of this entry, captured before any continue below
+		const unsigned int idx = i++;
+		if(!cJSON_IsString(revServer))
 		{
+			char *dump = cJSON_Print(revServer);
 			log_err("Skipped invalid dns.revServers[%u]: %s (not a string)",
-			        i, cJSON_Print(revServer));
+			        idx, dump ? dump : "(null)");
+			free(dump);
 			continue;
 		}
 
@@ -521,13 +534,13 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 
 		if(active == NULL || cidr == NULL || target == NULL)
 		{
-			log_err("Skipped invalid dns.revServers[%u]: %s (not fully defined)", i, revServer->valuestring);
+			log_err("Skipped invalid dns.revServers[%u]: %s (not fully defined)", idx, revServer->valuestring);
 			free(copy);
 			continue;
 		}
 
 		fprintf(pihole_conf, "# Reverse server setting (%u%s server)\n",
-		        i+1, get_ordinal_suffix(i+1));
+		        idx+1, get_ordinal_suffix(idx+1));
 		fprintf(pihole_conf, "rev-server=%s,%s\n", cidr, target);
 
 		// If we have a reverse domain, we forward all queries to this domain to
@@ -747,10 +760,9 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 		if(cJSON_GetArraySize(conf->dhcp.hosts.v.json) > 0)
 		{
 			fputs("# Per host parameters for the DHCP server\n", pihole_conf);
-			const int n = cJSON_GetArraySize(conf->dhcp.hosts.v.json);
-			for(int i = 0; i < n; i++)
+			cJSON *server = NULL;
+			cJSON_ArrayForEach(server, conf->dhcp.hosts.v.json)
 			{
-				cJSON *server = cJSON_GetArrayItem(conf->dhcp.hosts.v.json, i);
 				if(server != NULL && cJSON_IsString(server))
 					fprintf(pihole_conf, "dhcp-host=%s\n", server->valuestring);
 			}
@@ -761,10 +773,9 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 	if(cJSON_GetArraySize(conf->dns.cnameRecords.v.json) > 0)
 	{
 		fputs("# User-defined custom CNAMEs\n", pihole_conf);
-		const int n = cJSON_GetArraySize(conf->dns.cnameRecords.v.json);
-		for(int i = 0; i < n; i++)
+		cJSON *server = NULL;
+		cJSON_ArrayForEach(server, conf->dns.cnameRecords.v.json)
 		{
-			cJSON *server = cJSON_GetArrayItem(conf->dns.cnameRecords.v.json, i);
 			if(server != NULL && cJSON_IsString(server))
 				fprintf(pihole_conf, "cname=%s\n", server->valuestring);
 		}
@@ -1154,9 +1165,9 @@ bool write_custom_list(void)
 	const int N = cJSON_GetArraySize(config.dns.hosts.v.json);
 	if(N > 0)
 	{
-		for(int i = 0; i < N; i++)
+		cJSON *entry = NULL;
+		cJSON_ArrayForEach(entry, config.dns.hosts.v.json)
 		{
-			cJSON *entry = cJSON_GetArrayItem(config.dns.hosts.v.json, i);
 			if(entry != NULL && cJSON_IsString(entry))
 				fprintf(custom_list, "%s\n", entry->valuestring);
 		}

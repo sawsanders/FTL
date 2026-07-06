@@ -157,10 +157,10 @@ bool writeFTLtoml(const bool verbose, FILE *fp)
 		fprintf(fp, "# %u %s forced through environment:\n",
 			num_env_vars, num_env_vars == 1 ? "entry is" : "entries are");
 
-		for(unsigned int i = 0; i < num_env_vars; i++)
+		cJSON *env = NULL;
+		cJSON_ArrayForEach(env, env_vars)
 		{
-			const char *env_var = cJSON_GetArrayItem(env_vars, i)->valuestring;
-			fprintf(fp, "#   - %s\n", env_var);
+			fprintf(fp, "#   - %s\n", env->valuestring);
 		}
 	}
 	else

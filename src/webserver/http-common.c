@@ -518,6 +518,10 @@ const char * __attribute__((const)) get_http_method_str(const enum http_method m
 
 void read_and_parse_payload(struct ftl_conn *api)
 {
+	// Defense in depth: never operate on an unallocated payload buffer
+	if(api->payload.raw == NULL)
+		return;
+
 	// Read payload
 	api->payload.size = mg_read(api->conn, api->payload.raw, MAX_PAYLOAD_BYTES - 1);
 	if (api->payload.size < 1)
@@ -687,44 +691,34 @@ char *__attribute__((malloc)) escape_json(const char *string)
 }
 
 // Remove duplicates from a cJSON array
-// This function uses the less efficient cJSON_GetArraySize() function compared
-// to cJSON_ArrayForEach() as we are going to modify the array in-place while
-// iterating over it
+// Remove duplicate string entries from a JSON array in place.
+// Walks the underlying linked list directly and deletes duplicates by pointer.
+// This avoids the O(index) cJSON_GetArrayItem()/cJSON_GetArraySize() calls that
+// turned the nested scan into O(n^3); it is now O(n^2). The duplicate is always
+// located after the current outer item, so deleting it never invalidates the
+// outer traversal, and the inner "next" pointer is saved before the deletion.
 void cJSON_unique_array(cJSON *array)
 {
 	// Check if the array is an array
 	if(!cJSON_IsArray(array))
 		return;
 
-	for(int oi = 0; oi < cJSON_GetArraySize(array); oi++)
+	for(cJSON *outer_item = array->child; outer_item != NULL; outer_item = outer_item->next)
 	{
-		// Get the outer item
-		cJSON *outer_item = cJSON_GetArrayItem(array, oi);
 		// Check if the item is a string
 		if (!cJSON_IsString(outer_item))
 			continue;
 
 		// Check for duplicates in the remainder of the array
-		for(int ii = oi + 1; ii < cJSON_GetArraySize(array); ii++)
+		cJSON *inner_item = outer_item->next;
+		while(inner_item != NULL)
 		{
-			// Get the inner item
-			cJSON *inner_item = cJSON_GetArrayItem(array, ii);
-			// Check if the inner item is a string
-			if (!cJSON_IsString(inner_item))
-				continue;
-
-			// Compare the two strings
-			if(strcmp(outer_item->valuestring, inner_item->valuestring) == 0)
-			{
-				// Remove the duplicate item, this is safe as we are
-				// at least one item ahead of the outer item
-				cJSON_DeleteItemFromArray(array, ii);
-				// Compensate for removed item (the for loop
-				// will increment ii for the next step, thus
-				// we need to decrement it here)
-				ii--;
-				continue;
-			}
+			// Remember the next item before a possible deletion
+			cJSON *next = inner_item->next;
+			if(cJSON_IsString(inner_item) &&
+			   strcmp(outer_item->valuestring, inner_item->valuestring) == 0)
+				cJSON_Delete(cJSON_DetachItemViaPointer(array, inner_item));
+			inner_item = next;
 		}
 	}
 }

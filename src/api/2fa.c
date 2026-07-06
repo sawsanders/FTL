@@ -240,7 +240,11 @@ static bool copy_totp_secret(char *secret, const size_t secret_len)
 }
 
 static time_t last_attempt = 0;
-static uint32_t last_code = 0;
+// Last accepted time-step counter (RFC 6238 T value). Tracking the counter
+// instead of the raw code value enforces true one-time-use: once a step has
+// been accepted, that step and any earlier one can never be replayed, even
+// though the code stays numerically valid across the -1..+1 acceptance window.
+static uint64_t last_counter = 0;
 static pthread_mutex_t totp_lock = PTHREAD_MUTEX_INITIALIZER;
 enum totp_status verifyTOTP(const uint32_t incode)
 {
@@ -271,9 +275,18 @@ enum totp_status verifyTOTP(const uint32_t incode)
 	}
 
 	// Verify code for the previous, the current and the next time step
+	// Defer a reuse verdict until the whole window has been checked: two
+	// adjacent time steps can yield identical digits, so a match on a stale
+	// step must not prevent a genuinely fresh (later) step from being
+	// accepted for the same submitted code.
+	bool reused = false;
 	for(int i = -1; i <= 1; i++)
 	{
-		const uint32_t gencode = totp(decoded_secret, sizeof(decoded_secret), now + i*RFC6238_X);
+		const time_t t = now + i*RFC6238_X;
+		// Time-step counter for this candidate window (RFC 6238 T value),
+		// matching the value used internally by totp()
+		const uint64_t counter = (t - RFC6238_T0) / RFC6238_X;
+		const uint32_t gencode = totp(decoded_secret, sizeof(decoded_secret), t);
 
 		// Verify code
 		// RFC 6238 (section 4.2): If the calculated value matches the value
@@ -286,19 +299,28 @@ enum totp_status verifyTOTP(const uint32_t incode)
 		// it accepted previously
 		if(gencode == incode)
 		{
-			if(gencode == last_code)
+			// Reject reuse of an already accepted (or earlier) time
+			// step, but keep scanning in case a later, still-fresh
+			// step also matches this code
+			if(counter <= last_counter)
 			{
-				log_warn("2FA code has already been used (%i, %u), please wait %lu seconds",
-				         i, gencode, (unsigned long)(RFC6238_X - (now % RFC6238_X)));
-				pthread_mutex_unlock(&totp_lock);
-				return TOTP_REUSED;
+				reused = true;
+				continue;
 			}
 			const char *which = i == -1 ? "previous" : i == 0 ? "current" : "next";
 			log_debug(DEBUG_API, "2FA code from %s time step is valid", which);
-			last_code = gencode;
+			last_counter = counter;
 			pthread_mutex_unlock(&totp_lock);
 			return TOTP_CORRECT;
 		}
+	}
+
+	if(reused)
+	{
+		log_warn("2FA code has already been used, please wait %lu seconds",
+		         (unsigned long)(RFC6238_X - (now % RFC6238_X)));
+		pthread_mutex_unlock(&totp_lock);
+		return TOTP_REUSED;
 	}
 
 	pthread_mutex_unlock(&totp_lock);

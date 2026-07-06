@@ -178,7 +178,10 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 	edns.valid = true;
 
 	size_t offset; // The header is 11 bytes before the beginning of OPTION-DATA
-	while ((offset = (p - pheader - 11u)) < rdlen && rdlen < UINT16_MAX)
+	// Require the full 4-byte OPTION-CODE/OPTION-LENGTH header to be
+	// present before reading it, otherwise a truncated option would make
+	// the two GETSHORTs below read past the pseudoheader buffer
+	while ((offset = (p - pheader - 11u)) + 4u <= rdlen && rdlen < UINT16_MAX)
 	{
 		unsigned short code, optlen;
 		GETSHORT(code, p);
@@ -196,7 +199,7 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 		log_debug(DEBUG_EDNS0, "code %u, optlen %u (bytes %zu - %zu of %u)",
 		          code, optlen, offset, offset + optlen, rdlen);
 
-		if (code == EDNS0_ECS && config.dns.EDNS0ECS.v.b)
+		if (code == EDNS0_ECS && config.dns.EDNS0ECS.v.b && optlen >= 4)
 		{
 			// EDNS(0) CLIENT SUBNET
 			// RFC 7871              Client Subnet in DNS Queries              6.  Option Format
@@ -229,7 +232,13 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 			else if(family == 2 && addrlen <= sizeof(addr.addr6.s6_addr)) // IPv6
 				memcpy(addr.addr6.s6_addr, p, addrlen);
 			else
+			{
+				// Unhandled family: p has already advanced by the
+				// 4-byte FAMILY/prefix header above, so consume the
+				// remaining option data to line up with the next option
+				p += optlen - 4;
 				continue;
+			}
 
 			// Advance working pointer (we already walked 4 bytes above)
 			p += optlen - 4;

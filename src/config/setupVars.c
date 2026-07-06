@@ -261,8 +261,10 @@ static void get_conf_string_array_from_setupVars_regex(const char *key, struct c
 		for (unsigned int i = 0; i < setupVarsElements; ++i)
 		{
 			// Convert to regex by adding ^ and $ to the string and replacing . with \.
-			// We need to allocate memory for this
-			char *regex = calloc(2*strlen(setupVarsArray[i]), sizeof(char));
+			// We need to allocate memory for this: worst case every
+			// character is a dot that gets escaped (2*len), plus the
+			// terminating NUL
+			char *regex = calloc(2*strlen(setupVarsArray[i]) + 1, sizeof(char));
 			if(regex == NULL)
 			{
 				log_warn("get_conf_string_array_from_setupVars(%s) failed: Could not allocate memory for regex", key);

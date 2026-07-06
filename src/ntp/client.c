@@ -43,6 +43,8 @@
 #include "capabilities.h"
 // search_proc()
 #include "procps.h"
+// get_secure_randomness()
+#include "config/password.h"
 
 // Required accuracy of the NTP sync in seconds in order to start the NTP server
 // thread. If the NTP sync is less accurate than this value, the NTP server
@@ -57,11 +59,27 @@
 // Maximum number of NTP syncs to attempt before giving up
 #define RETRY_ATTEMPTS 5
 
+// Panic threshold (in seconds) for stepping the system clock. If a sync would
+// require stepping the clock by more than this amount, the step is refused to
+// prevent a consistent malicious/spoofed server from moving the clock by an
+// arbitrary magnitude (the offset math allows +/- 68 years). This mirrors
+// ntpd's default panic threshold. The very first synchronization after boot is
+// exempt because devices without an RTC (e.g. Raspberry Pi) start with a
+// wildly wrong clock and would otherwise never be able to synchronize.
+#define NTP_MAX_STEP_SECS 1000
+
+// Whether the next clock step is the first synchronization after boot. Until
+// the first successful sync, a large initial step is permitted; afterwards the
+// panic threshold above is enforced.
+static bool ntp_first_sync = true;
+
 struct ntp_sync
 {
 	bool valid;
 	uint64_t org;
+	uint64_t t1;
 	uint64_t xmt;
+	uint8_t stratum;
 	double theta;
 	double delta;
 	double precision;
@@ -107,10 +125,27 @@ static bool request(int fd, const char *server, struct addrinfo *saddr, struct n
 	// This is the time at which the local clock was last set or corrected.
 	memset(&buf[8], 0, sizeof(uint64_t));
 
-	// Set Origin Timestamp (org) in NTP format
-	ntp->org = gettime64();
+	// Set Origin Timestamp (org) to an unpredictable random 64-bit nonce
+	// instead of the real wall-clock transmit time. RFC 5905 servers echo
+	// this value back into the origin field of the reply, so it acts as an
+	// interoperable anti-spoof token (chrony does the same). Using the real,
+	// predictable clock here would let an off-path attacker guess the value
+	// and forge replies. On RNG failure we fail the request rather than send
+	// a predictable value.
+	do {
+		if(!get_secure_randomness((uint8_t *)&ntp->org, sizeof(ntp->org)))
+		{
+			log_err("Failed to generate NTP anti-spoof nonce, aborting request");
+			return false;
+		}
+	} while(ntp->org == 0);
 	const uint64_t norg = hton64(ntp->org);
 	memcpy(&buf[40], &norg, sizeof(norg));
+
+	// Capture the REAL transmit time (T1) right before sending. The on-wire
+	// origin timestamp is now a random nonce, but the offset/delay math still
+	// needs the actual send time, so it is kept separately here.
+	ntp->t1 = gettime64();
 
 	// Send request
 	if(send(fd, buf, 48, 0) != 48)
@@ -370,10 +405,15 @@ static bool reply(const int fd, const char *server, struct addrinfo *saddr, stru
 		return false;
 	}
 
-	ntp_stratum = buf[1] + 1;
+	// Store the stratum per-sample. It is only committed to the global
+	// ntp_stratum on the success path once the whole round has been
+	// validated (see ntp_client()), so a single spoofed reply cannot set it.
+	ntp->stratum = buf[1] + 1;
 
 	// Calculate delay and offset
-	const double T1 = ntp->org / FRAC;
+	// T1 is the REAL transmit time captured in request(), not the on-wire
+	// origin timestamp (which is now a random anti-spoof nonce).
+	const double T1 = ntp->t1 / FRAC;
 	const double T2 = rec / FRAC;
 	const double T3 = ntp->xmt / FRAC;
 	const double T4 = dst / FRAC;
@@ -606,6 +646,10 @@ bool ntp_client(const char *server, const bool settime, const bool print)
 	// Compute trimmed mean (average excluding outliers)
 	double theta_trim = 0.0, delta_trim = 0.0;
 	unsigned int trim = 0;
+	// Track the largest stratum among the samples that survive trimming.
+	// Choosing the maximum is conservative: a single surviving spoofed
+	// low-stratum reply cannot inflate the perceived clock quality.
+	uint8_t trim_stratum = 0;
 	for(unsigned int i = 0; i < count; i++)
 	{
 		// Skip invalid values
@@ -623,6 +667,8 @@ bool ntp_client(const char *server, const bool settime, const bool print)
 
 		theta_trim += ntp[i].theta;
 		delta_trim += ntp[i].delta;
+		if(ntp[i].stratum > trim_stratum)
+			trim_stratum = ntp[i].stratum;
 		trim++;
 	}
 
@@ -654,13 +700,34 @@ bool ntp_client(const char *server, const bool settime, const bool print)
 		// since Linux 2.6.26, see man ntp_adjtime(2) for details.
 		bool success;
 		if(fabs(theta_trim) > 0.5)
+		{
+			// Panic threshold: refuse to step the clock by an
+			// implausibly large amount. This blocks a consistent
+			// spoofed/malicious server from moving the clock by an
+			// arbitrary magnitude. The very first sync after boot is
+			// exempt so RTC-less devices can set their initial time.
+			if(!ntp_first_sync && fabs(theta_trim) > NTP_MAX_STEP_SECS)
+			{
+				char errbuf[256];
+				snprintf(errbuf, sizeof(errbuf),
+				         "Refusing to step system clock by %.0f s (exceeds %d s panic threshold) - possible malicious NTP server. If this device has no RTC, restart FTL to permit the initial large step.",
+				         theta_trim, NTP_MAX_STEP_SECS);
+				errbuf[sizeof(errbuf) - 1] = '\0';
+				log_ntp_message(true, false, errbuf);
+				return false;
+			}
 			success = settime_step(&unix_time, theta_trim);
+		}
 		else
 			success = settime_skew(theta_trim);
 
 		// Return early if time could not be set
 		if(!success)
 			return false;
+
+		// The initial post-boot synchronization is complete; enforce the
+		// panic threshold on all subsequent clock steps.
+		ntp_first_sync = false;
 
 		// Update last NTP sync time
 		ntp_last_sync = ntp_time;
@@ -683,9 +750,15 @@ bool ntp_client(const char *server, const bool settime, const bool print)
 	ntp_root_delay = D2FP(delta_trim);
 	ntp_root_dispersion = D2FP(theta_stdev);
 
+	// Commit the stratum only now that the whole round has been validated,
+	// using the most conservative (largest) surviving stratum.
+	ntp_stratum = trim_stratum;
+
 	// Offset and delay larger than ACCURACY seconds are considered as invalid
-	// during local testing (e.g., when the server is on the same machine)
-	return theta_trim < ACCURACY && delta_trim < ACCURACY;
+	// during local testing (e.g., when the server is on the same machine).
+	// The offset is signed, so compare its magnitude - a large negative
+	// offset is just as inaccurate as a large positive one.
+	return fabs(theta_trim) < ACCURACY && delta_trim < ACCURACY;
 }
 
 static void *ntp_client_thread(void *arg)
@@ -724,8 +797,11 @@ static void *ntp_client_thread(void *arg)
 			restart_ftl("System time updated");
 		}
 
-		// Calculate time to sleep
-		unsigned int sleep_time = config.ntp.sync.interval.v.ui - (unsigned int)time_delta;
+		// Calculate time to sleep. Clamp to zero when the sync itself took
+		// longer than the configured interval, otherwise the unsigned
+		// subtraction would underflow into an effectively infinite sleep.
+		const unsigned int interval = config.ntp.sync.interval.v.ui;
+		unsigned int sleep_time = time_delta >= interval ? 0 : interval - (unsigned int)time_delta;
 
 		// Set first run to false
 		first_run = false;

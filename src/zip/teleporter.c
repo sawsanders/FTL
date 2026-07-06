@@ -63,6 +63,17 @@ static const char *ftl_tables[] = {
 	"network_addresses"
 };
 
+// Copy a message into the ERRBUF_SIZE-sized hint buffer, always leaving it
+// NUL-terminated (plain strncpy(hint, src, ERRBUF_SIZE) would not terminate
+// when src is ERRBUF_SIZE bytes or longer, e.g. a long SQLite error message)
+static void set_hint(char *hint, const char *src)
+{
+	if(src == NULL)
+		src = "";
+	strncpy(hint, src, ERRBUF_SIZE - 1);
+	hint[ERRBUF_SIZE - 1] = '\0';
+}
+
 // Create database in memory, copy selected tables to it, serialize and return a memory pointer to it
 static bool create_teleporter_database(const char *filename, const char **tables, const unsigned int num_tables,
                                        void **buffer, size_t *size)
@@ -315,18 +326,26 @@ static const char *test_and_import_pihole_toml(void *ptr, size_t size, char * co
 	struct config teleporter_config = { 0 };
 	duplicate_config(&teleporter_config, &config);
 	if(!readFTLtoml(NULL, &teleporter_config, toml.toptab, true, NULL, 0, true))
+	{
+		free_config(&teleporter_config, false);
+		toml_free(toml);
 		return "File etc/pihole/pihole.toml in ZIP archive contains invalid TOML configuration";
+	}
 
 	// Test dnsmasq config in the imported configuration
 	// The dnsmasq configuration will be overwritten if the test succeeds
 	if(!write_dnsmasq_config(&teleporter_config, true, hint))
+	{
+		free_config(&teleporter_config, false);
+		toml_free(toml);
 		return "File etc/pihole/pihole.toml in ZIP archive contains invalid dnsmasq configuration";
+	}
 
 	// When we reach this point, we know that the file is a valid TOML file and contains
 	// a valid configuration for Pi-hole. We can now safely overwrite the current
 	// configuration with the one from the ZIP archive
 
-	// Install new configuration
+	// Install new configuration (takes ownership of teleporter_config)
 	replace_config(&teleporter_config);
 
 	// Write new pihole.toml to disk, the dnsmaq config was already written above
@@ -335,6 +354,7 @@ static const char *test_and_import_pihole_toml(void *ptr, size_t size, char * co
 	writeFTLtoml(true, NULL);
 	write_custom_list();
 
+	toml_free(toml);
 	return NULL;
 }
 
@@ -353,12 +373,12 @@ static const char *import_dhcp_leases(const void *ptr, size_t size, char * const
 	FILE *fp = fopen(DHCPLEASESFILE, "w");
 	if(fp == NULL)
 	{
-		strncpy(hint, strerror(errno), ERRBUF_SIZE);
+		set_hint(hint, strerror(errno));
 		return "Failed to open dhcp.leases file for writing";
 	}
 	if(fwrite(ptr, 1, size, fp) != size)
 	{
-		strncpy(hint, strerror(errno), ERRBUF_SIZE);
+		set_hint(hint, strerror(errno));
 		fclose(fp);
 		return "Failed to write to dhcp.leases file";
 	}
@@ -398,13 +418,13 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 	if(sqlite3_open_v2(":memory:", &database,
 	                   SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK)
 	{
-		strncpy(hint, sqlite3_errmsg(database), ERRBUF_SIZE);
+		set_hint(hint, sqlite3_errmsg(database));
 		sqlite3_close(database);
 		return "Failed to open temporary SQLite3 database";
 	}
 	if(sqlite3_deserialize(database, "main", ptr, size, size, SQLITE_DESERIALIZE_READONLY) != SQLITE_OK)
 	{
-		strncpy(hint, sqlite3_errmsg(database), ERRBUF_SIZE);
+		set_hint(hint, sqlite3_errmsg(database));
 		sqlite3_close(database);
 		return "File etc/pihole/gravity.db in ZIP archive is not a valid SQLite3 database file";
 	}
@@ -417,21 +437,21 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 	sqlite3_stmt *statement = NULL;
 	if(sqlite3_prepare_v2(database, "PRAGMA integrity_check;", -1, &statement, NULL) != SQLITE_OK)
 	{
-		strncpy(hint, sqlite3_errmsg(database), ERRBUF_SIZE);
+		set_hint(hint, sqlite3_errmsg(database));
 		sqlite3_finalize(statement);
 		sqlite3_close(database);
 		return "Failed to prepare PRAGMA integrity_check statement";
 	}
 	if(sqlite3_step(statement) != SQLITE_ROW)
 	{
-		strncpy(hint, sqlite3_errmsg(database), ERRBUF_SIZE);
+		set_hint(hint, sqlite3_errmsg(database));
 		sqlite3_finalize(statement);
 		sqlite3_close(database);
 		return "Failed to execute PRAGMA integrity_check statement";
 	}
 	if(strcmp((const char *)sqlite3_column_text(statement, 0), "ok") != 0)
 	{
-		strncpy(hint, (const char *)sqlite3_column_text(statement, 0), ERRBUF_SIZE);
+		set_hint(hint, (const char *)sqlite3_column_text(statement, 0));
 		sqlite3_finalize(statement);
 		sqlite3_close(database);
 		return "Database file in ZIP archive is not a valid SQLite3 database (integrity check failed)";
@@ -447,7 +467,7 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 	snprintf(attach_stmt, sizeof(attach_stmt), "ATTACH DATABASE '%s' AS disk;", destination);
 	if(sqlite3_exec(database, attach_stmt, NULL, NULL, &err) != SQLITE_OK)
 	{
-		strncpy(hint, err, ERRBUF_SIZE);
+		set_hint(hint, err);
 		sqlite3_free(err);
 		sqlite3_close(database);
 		return "Failed to attach database file to in-memory SQLite3 database";
@@ -456,7 +476,7 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 	// Disable foreign key checks for import
 	if(sqlite3_exec(database, "PRAGMA foreign_keys = 0;", NULL, NULL, &err) != SQLITE_OK)
 	{
-		strncpy(hint, err, ERRBUF_SIZE);
+		set_hint(hint, err);
 		sqlite3_free(err);
 		sqlite3_close(database);
 		return "Failed to disable foreign key checks for import";
@@ -465,7 +485,7 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 	// Start transaction
 	if(sqlite3_exec(database, "BEGIN TRANSACTION;", NULL, NULL, &err) != SQLITE_OK)
 	{
-		strncpy(hint, err, ERRBUF_SIZE);
+		set_hint(hint, err);
 		sqlite3_free(err);
 		sqlite3_close(database);
 		return "Failed to start transaction";
@@ -479,7 +499,7 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 		snprintf(stmt, sizeof(stmt), "DELETE FROM disk.\"%s\";", tables[i]);
 		if(sqlite3_exec(database, stmt, NULL, NULL, &err) != SQLITE_OK)
 		{
-			strncpy(hint, err, ERRBUF_SIZE);
+			set_hint(hint, err);
 			sqlite3_free(err);
 			sqlite3_close(database);
 			return "Failed to delete from disk database table";
@@ -493,7 +513,7 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 		snprintf(stmt, sizeof(stmt), "INSERT OR REPLACE INTO disk.\"%s\" SELECT * FROM \"%s\";", tables[i], tables[i]);
 		if(sqlite3_exec(database, stmt, NULL, NULL, &err) != SQLITE_OK)
 		{
-			strncpy(hint, err, ERRBUF_SIZE);
+			set_hint(hint, err);
 			sqlite3_free(err);
 			sqlite3_close(database);
 			return "Failed to insert into disk database table";
@@ -505,7 +525,7 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 	// End transaction
 	if(sqlite3_exec(database, "END", NULL, NULL, &err) != SQLITE_OK)
 	{
-		strncpy(hint, err, ERRBUF_SIZE);
+		set_hint(hint, err);
 		sqlite3_free(err);
 		sqlite3_close(database);
 		return "Failed to commit transaction";
@@ -514,7 +534,7 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 	// Detach the database file from the in-memory database
 	if(sqlite3_exec(database, "DETACH DATABASE disk;", NULL, NULL, &err) != SQLITE_OK)
 	{
-		strncpy(hint, err, ERRBUF_SIZE);
+		set_hint(hint, err);
 		sqlite3_free(err);
 		sqlite3_close(database);
 		return "Failed to detach database file from in-memory SQLite3 database";
@@ -540,7 +560,7 @@ const char *read_teleporter_zip(uint8_t *buffer, const size_t buflen, char * con
 	// Open ZIP archive from memory buffer
 	if(!mz_zip_reader_init_mem(&zip, buffer, buflen, 0))
 	{
-		strncpy(hint, mz_zip_get_error_string(mz_zip_get_last_error(&zip)), ERRBUF_SIZE);
+		set_hint(hint, mz_zip_get_error_string(mz_zip_get_last_error(&zip)));
 		return "Failed to parse received ZIP archive";
 	}
 
@@ -576,6 +596,16 @@ const char *read_teleporter_zip(uint8_t *buffer, const size_t buflen, char * con
 		if(!extract)
 		{
 			log_info("Skipping file %s in Teleporter archive", file_stat.m_filename);
+			continue;
+		}
+
+		// Reject an absurdly large (attacker-controlled) uncompressed size
+		// before allocating, to avoid a memory-exhaustion DoS. This matches
+		// the 256 MiB cap enforced on the gzip path.
+		if(file_stat.m_uncomp_size > 0x10000000)
+		{
+			log_warn("Skipping file %u (%s) in ZIP archive: uncompressed size %llu is too large",
+			         i, file_stat.m_filename, (unsigned long long)file_stat.m_uncomp_size);
 			continue;
 		}
 
@@ -807,9 +837,9 @@ bool read_teleporter_zip_from_disk(const char *filename)
 	fseek(fp, 0, SEEK_END);
 	const size_t size = (size_t)ftell(fp);
 	fseek(fp, 0, SEEK_SET);
-	if(size > MAX_TELEPORTER_ZIP_SIZE)
+	if(size == 0 || size > MAX_TELEPORTER_ZIP_SIZE)
 	{
-		log_err("ZIP archive %s is too large (%zu bytes, max. %zu bytes)",
+		log_err("ZIP archive %s has an invalid size (%zu bytes, max. %zu bytes)",
 		        filename, size, MAX_TELEPORTER_ZIP_SIZE);
 		fclose(fp);
 		return false;
@@ -817,6 +847,12 @@ bool read_teleporter_zip_from_disk(const char *filename)
 
 	// Read ZIP archive to memory
 	void *ptr = calloc(size, sizeof(char));
+	if(ptr == NULL)
+	{
+		log_err("Failed to allocate %zu bytes for ZIP archive", size);
+		fclose(fp);
+		return false;
+	}
 	if(fread(ptr, 1, size, fp) != size)
 	{
 		log_err("Failed to read %zu bytes from %s: %s",

@@ -176,6 +176,12 @@ int api_handler(struct mg_connection *conn, void *ignored)
 							api.request->request_method,
 							api.request->local_uri_raw,
 							strerror(ENOMEM));
+					// Break (not return) so the cleanup block below runs
+					ret = send_json_error(&api, 500,
+					                      "internal_error",
+					                      "Failed to allocate memory for payload",
+					                      NULL);
+					break;
 				}
 
 				// Read and try to parse payload

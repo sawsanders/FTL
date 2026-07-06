@@ -305,6 +305,9 @@ int gravity_parseList(const char *infile, const char *outfile, const char *adlis
 				// Shift line contents left by 3 bytes to remove BOM
 				memmove(line, line + 3, read - 3);
 				read -= 3;
+				// Re-terminate at the new end, otherwise the old
+				// 3 trailing bytes remain readable to strlen/strtok
+				line[read] = '\0';
 			}
 		}
 

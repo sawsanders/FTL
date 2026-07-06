@@ -642,8 +642,12 @@ static void format_hostname_message(char *plain, const int sizeof_plain, char *h
 		return;
 	}
 
+	// Only read name[pos] if pos is actually within the string, otherwise
+	// a stored/caller-supplied pos unrelated to the name length would cause
+	// an out-of-bounds read.
+	const unsigned char badchar = (pos >= 0 && (size_t)pos < strlen(name)) ? (unsigned char)name[pos] : 0;
 	if(snprintf(html, sizeof_html, "Host name of client <code>%s</code> => <code>%s</code> contains (at least) one invalid character (hex %02x) at position %i",
-			escaped_ip, escaped_name, (unsigned char)name[pos], pos) > sizeof_html)
+			escaped_ip, escaped_name, badchar, pos) > sizeof_html)
 		log_warn("format_hostname_message(): Buffer too small to hold HTML message, warning truncated");
 
 	free(escaped_ip);
@@ -703,8 +707,17 @@ static void format_dnsmasq_warn_message(char *plain, const int sizeof_plain, cha
 	if(sizeof_html < 1 || html == NULL)
 		return;
 
-	if(snprintf(html, sizeof_html, "<code>dnsmasq</code> warning:<pre>%s</pre>Check out <a href=\"https://docs.pi-hole.net/ftldns/dnsmasq_warn/\" target=\"_blank\">our documentation</a> for further information.", message) > sizeof_html)
+	// Escape the warning text before embedding it into HTML, matching the
+	// other renderers - the dnsmasq message is untrusted and would
+	// otherwise allow stored HTML/script injection in the admin interface
+	char *escaped_message = escape_html(message);
+	if(escaped_message == NULL)
+		return;
+
+	if(snprintf(html, sizeof_html, "<code>dnsmasq</code> warning:<pre>%s</pre>Check out <a href=\"https://docs.pi-hole.net/ftldns/dnsmasq_warn/\" target=\"_blank\">our documentation</a> for further information.", escaped_message) > sizeof_html)
 		log_warn("format_dnsmasq_warn_message(): Buffer too small to hold HTML message, warning truncated");
+
+	free(escaped_message);
 }
 
 static void format_load_message(char *plain, const int sizeof_plain, char *html, const int sizeof_html, const double load, const int nprocs)
@@ -919,8 +932,28 @@ static void format_ntp_message(char *plain, const int sizeof_plain, char *html, 
 	if(sizeof_html < 1 || html == NULL)
 		return;
 
-	if(snprintf(html, sizeof_html, "%s in NTP %s:<pre>%s</pre>", level, who, message) > sizeof_html)
+	char *escaped_level = escape_html(level);
+	char *escaped_who = escape_html(who);
+	char *escaped_message = escape_html(message);
+
+	// Return early if memory allocation failed
+	if(escaped_level == NULL || escaped_who == NULL || escaped_message == NULL)
+	{
+		if(escaped_level != NULL)
+			free(escaped_level);
+		if(escaped_who != NULL)
+			free(escaped_who);
+		if(escaped_message != NULL)
+			free(escaped_message);
+		return;
+	}
+
+	if(snprintf(html, sizeof_html, "%s in NTP %s:<pre>%s</pre>", escaped_level, escaped_who, escaped_message) > sizeof_html)
 		log_warn("format_ntp_message(): Buffer too small to hold HTML message, warning truncated");
+
+	free(escaped_level);
+	free(escaped_who);
+	free(escaped_message);
 }
 
 static void format_verify_message(char *plain, const int sizeof_plain, char *html, const int sizeof_html,

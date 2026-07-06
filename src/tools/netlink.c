@@ -1482,7 +1482,13 @@ void get_gateway_name(char gateway[MAXIFACESTRLEN])
 		   cJSON_IsString(dst) &&
 		   strcmp(cJSON_GetStringValue(dst), "default") == 0)
 		{
-			strncpy(gateway, cJSON_GetStringValue(cJSON_GetObjectItem(route, "oif")), MAXIFACESTRLEN - 1);
+			// A multipath/ECMP default route carries no top-level "oif".
+			// Skip it (falling back to eth0 below) instead of passing a
+			// NULL string into strncpy().
+			cJSON *oif = cJSON_GetObjectItem(route, "oif");
+			if(!cJSON_IsString(oif))
+				continue;
+			strncpy(gateway, cJSON_GetStringValue(oif), MAXIFACESTRLEN - 1);
 			gateway[MAXIFACESTRLEN - 1] = '\0';
 			break;
 		}

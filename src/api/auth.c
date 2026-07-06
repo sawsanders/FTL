@@ -23,6 +23,8 @@
 #include "daemon.h"
 // sha256_raw_to_hex()
 #include "config/password.h"
+// constant-time memeql_sec()
+#include <nettle/memops.h>
 // database session functions
 #include "database/session-table.h"
 // FTLDBerror()
@@ -107,7 +109,9 @@ int check_client_auth(struct ftl_conn *api, const bool is_api)
 	}
 
 	// Does the client provide a session ID?
-	char sid[SID_SIZE];
+	// Zero-initialize so a partially-filled buffer is always NUL-padded before
+	// the constant-time comparison below.
+	char sid[SID_SIZE] = { 0 };
 	const char *sid_source = "-";
 	// Try to extract SID from cookie
 	bool sid_avail = false;
@@ -197,7 +201,9 @@ int check_client_auth(struct ftl_conn *api, const bool is_api)
 		sid_avail = true;
 	}
 
-	if(!sid_avail)
+	// An empty SID must never be treated as available: it could otherwise match
+	// a session slot whose sid was never populated (e.g. after an RNG failure).
+	if(!sid_avail || sid[0] == '\0')
 	{
 		api->message = "no SID provided";
 		log_debug(DEBUG_API, "API Authentication: FAIL (%s)", api->message);
@@ -211,7 +217,7 @@ int check_client_auth(struct ftl_conn *api, const bool is_api)
 
 	// If the SID has been sent through a cookie, we require a CSRF token in
 	// the header to be sent along with the request for any API requests
-	char csrf[SID_SIZE];
+	char csrf[SID_SIZE] = { 0 };
 	const bool need_csrf = cookie_auth && is_api;
 	if(need_csrf)
 	{
@@ -232,19 +238,28 @@ int check_client_auth(struct ftl_conn *api, const bool is_api)
 		}
 	}
 
+	// Lengths of the presented tokens, computed once for the constant-time
+	// comparisons below. A length check gates memeql_sec() so we never read
+	// past the shorter of the two NUL-terminated buffers.
+	const size_t sidlen = strlen(sid);
+	const size_t csrflen = need_csrf ? strlen(csrf) : 0;
+
 	bool expired = false;
 	AUTOLOCK(&auth_lock);
 	for(unsigned int i = 0; i < max_sessions; i++)
 	{
 		if(auth_data[i].used &&
-		   strcmp(auth_data[i].sid, sid) == 0)
+		   sidlen == strlen(auth_data[i].sid) &&
+		   memeql_sec(auth_data[i].sid, sid, sidlen))
 		{
 			// Check if session is known but expired
 			if(auth_data[i].valid_until < now)
 				expired = true;
 
 			// Check CSRF if authentiating via cookie
-			if(need_csrf && strcmp(auth_data[i].csrf, csrf) != 0)
+			if(need_csrf &&
+			   !(csrflen == strlen(auth_data[i].csrf) &&
+			     memeql_sec(auth_data[i].csrf, csrf, csrflen)))
 			{
 				api->message = "CSRF token mismatch";
 				log_debug(DEBUG_API, "API Authentication: FAIL (%s, received \"%s\", expected \"%s\")",
@@ -269,7 +284,8 @@ int check_client_auth(struct ftl_conn *api, const bool is_api)
 		// Update user cookie
 		if(snprintf(pi_hole_extra_headers, sizeof(pi_hole_extra_headers),
 		            FTL_SET_COOKIE,
-		            auth_data[user_id].sid, config.webserver.session.timeout.v.ui) < 0)
+		            auth_data[user_id].sid, config.webserver.session.timeout.v.ui,
+		            api->request->is_ssl ? "; Secure" : "") < 0)
 		{
 			return send_json_error(api, 500, "internal_error", "Internal server error", NULL);
 		}
@@ -415,7 +431,8 @@ static int send_api_auth_status(struct ftl_conn *api, const int user_id, const t
 		AUTOLOCK(&auth_lock);
 		if(snprintf(pi_hole_extra_headers, sizeof(pi_hole_extra_headers),
 		            FTL_SET_COOKIE,
-		            auth_data[user_id].sid, config.webserver.session.timeout.v.ui) < 0)
+		            auth_data[user_id].sid, config.webserver.session.timeout.v.ui,
+		            api->request->is_ssl ? "; Secure" : "") < 0)
 		{
 			return send_json_error(api, 500, "internal_error", "Internal server error", NULL);
 		}
@@ -431,7 +448,8 @@ static int send_api_auth_status(struct ftl_conn *api, const int user_id, const t
 		{
 			log_debug(DEBUG_API, "API Auth status: Logout, asking to delete cookie");
 
-			strncpy(pi_hole_extra_headers, FTL_DELETE_COOKIE, sizeof(pi_hole_extra_headers));
+			snprintf(pi_hole_extra_headers, sizeof(pi_hole_extra_headers),
+			         FTL_DELETE_COOKIE, api->request->is_ssl ? " Secure" : "");
 
 			// Revoke client authentication. This slot can be used by a new client afterwards.
 			const int code = delete_session(user_id, false) ? 204 : 404;
@@ -461,21 +479,23 @@ static int send_api_auth_status(struct ftl_conn *api, const int user_id, const t
 	{
 		log_debug(DEBUG_API, "API Auth status: Invalid, asking to delete cookie");
 
-		strncpy(pi_hole_extra_headers, FTL_DELETE_COOKIE, sizeof(pi_hole_extra_headers));
+		snprintf(pi_hole_extra_headers, sizeof(pi_hole_extra_headers),
+		         FTL_DELETE_COOKIE, api->request->is_ssl ? " Secure" : "");
 		cJSON *json = JSON_NEW_OBJECT();
 		get_session_object(api, json, user_id, now);
 		JSON_SEND_OBJECT_CODE(json, 401); // 401 Unauthorized
 	}
 }
 
-static void generateSID(char *sid)
+static bool generateSID(char *sid)
 {
 	uint8_t raw_sid[SID_SIZE];
 	if(!get_secure_randomness(raw_sid, sizeof(raw_sid)))
-		return;
+		return false;
 
 	base64_encode_raw(NETTLE_SIGN sid, SID_BITSIZE/8, raw_sid);
 	sid[SID_SIZE-1] = '\0';
+	return true;
 }
 
 // api/auth
@@ -665,9 +685,16 @@ int api_auth(struct ftl_conn *api)
 				auth_data[i].app = result == APPPASSWORD_CORRECT;
 				auth_data[i].cli = result == CLIPASSWORD_CORRECT;
 
-				// Generate new SID and CSRF token
-				generateSID(auth_data[i].sid);
-				generateSID(auth_data[i].csrf);
+				// Generate new SID and CSRF token. On RNG failure,
+				// release the slot we just claimed so no session with
+				// an empty sid/csrf can linger. The AUTOLOCK cleanup
+				// unlocks the mutex on return.
+				if(!generateSID(auth_data[i].sid) ||
+				   !generateSID(auth_data[i].csrf))
+				{
+					delete_session(i, true);
+					return send_json_error(api, 500, "internal_error", "Internal server error", NULL);
+				}
 
 				user_id = i;
 				break;
@@ -709,12 +736,21 @@ int api_auth(struct ftl_conn *api)
 	{
 		// No password set
 		api->message = "password incorrect";
-		log_debug(DEBUG_API, "API: Trying to auth with password but none set: '%s'", password);
+		log_debug(DEBUG_API, "API: Trying to auth with password but none set");
+
+		// Zero-out password in memory (symmetry with the success path)
+		if(password != NULL)
+			memset(password, 0, strlen(password));
 	}
 	else
 	{
 		api->message = "password incorrect";
-		log_debug(DEBUG_API, "API: Password incorrect: '%s'", password);
+		// Never log the plaintext password, only its length
+		log_debug(DEBUG_API, "API: Password incorrect (length %zu)", password ? strlen(password) : 0);
+
+		// Zero-out password in memory (symmetry with the success path)
+		if(password != NULL)
+			memset(password, 0, strlen(password));
 	}
 
 	// Free allocated memory

@@ -238,6 +238,12 @@ unsigned int __attribute__ ((pure)) config_path_depth(char **paths)
 
 void duplicate_config(struct config *dst, struct config *src)
 {
+	// Lock shared memory while we read the (possibly shared) source
+	// config. replace_config() frees the previous config under the same
+	// lock, so holding it here prevents a use-after-free when another
+	// thread swaps the config out while we are still copying its strings.
+	lock_shm();
+
 	// Post-processing:
 	// Initialize and verify config data
 	for(unsigned int i = 0; i < CONFIG_ELEMENTS; i++)
@@ -290,6 +296,8 @@ void duplicate_config(struct config *dst, struct config *src)
 				break;
 		}
 	}
+
+	unlock_shm();
 }
 
 // True = Identical, False = Different

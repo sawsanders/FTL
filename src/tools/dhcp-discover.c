@@ -353,7 +353,9 @@ static void print_dhcp_offer(struct in_addr source, struct dhcp_packet_data *off
 			else if(opttab[i].size & OT_TIME)
 			{
 				uint32_t time = 0;
-				memcpy(&time, &offer_packet->options[x], sizeof(time));
+				// Copy at most the advertised option length so a
+				// short/truncated option cannot read past the buffer
+				memcpy(&time, &offer_packet->options[x], optlen < sizeof(time) ? optlen : sizeof(time));
 				time = ntohl(time);
 				const char *optname = opttab[i].name;
 				// Some timers deserve a more user-friendly name
@@ -439,12 +441,16 @@ static void print_dhcp_offer(struct in_addr source, struct dhcp_packet_data *off
 			}
 			else if(opttype == 158) // DHCPv4 PCP Option (RFC 7291)
 			{                       // https://tools.ietf.org/html/rfc7291#section-4
+				if(optlen < 1)
+					break;
 				uint16_t list_length = offer_packet->options[x++] / 4; // 4 bytes per list entry
 				// Loop over IPv4 lists
 				for(unsigned int n = 0; n < list_length; n++)
 				{
 					struct in_addr addr_list = { 0 };
-					if(optlen < (n+1)*sizeof(addr_list.s_addr))
+					// The list-length byte above consumed one byte, so
+					// only optlen-1 bytes of address data remain
+					if(optlen < 1 + (n+1)*sizeof(addr_list.s_addr))
 						break;
 					memcpy(&addr_list.s_addr, &offer_packet->options[x+n*sizeof(addr_list.s_addr)], sizeof(addr_list.s_addr));
 					if(n > 0)
@@ -464,17 +470,25 @@ static void print_dhcp_offer(struct in_addr source, struct dhcp_packet_data *off
 				unsigned int n = 0;
 				for(unsigned int i = 1; n < optlen; i++)
 				{
-					// Extract destination descriptor
+					// Extract destination descriptor (prefix length)
 					unsigned char cidr = offer_packet->options[x+n++];
+
+					// Number of significant destination octets, i.e.
+					// ceil(cidr/8) = 0..4 bytes (RFC 3442)
+					const unsigned int width = (cidr + 7u) / 8u;
+					if(cidr > 32 || width > 4)
+						break; // invalid prefix length
+
+					// Ensure the significant destination octets and the
+					// trailing 4 router bytes are fully contained in this
+					// option before reading them, otherwise a malformed
+					// offer would make us read past the options buffer
+					if(n + width + 4u > optlen)
+						break;
+
 					unsigned char addr[4] = { 0 };
-					if(cidr > 0)
-						addr[0] = offer_packet->options[x+n++];
-					if(cidr > 8)
-						addr[1] = offer_packet->options[x+n++];
-					if(cidr > 16)
-						addr[2] = offer_packet->options[x+n++];
-					if(cidr > 24)
-						addr[3] = offer_packet->options[x+n++];
+					for(unsigned int k = 0; k < width; k++)
+						addr[k] = offer_packet->options[x+n++];
 
 					// Extract router address
 					unsigned char router[4] = { 0 };
@@ -628,7 +642,9 @@ static unsigned int get_dhcp_offer(const int sock, const uint32_t xid, const cha
 		printf("  BOOTP server: ");
 		if(offer_packet.sname[0] != 0)
 		{
-			size_t len = strlen(offer_packet.sname);
+			// sname is a fixed-size field that a malicious OFFER may
+			// leave unterminated, so bound the length to the field size
+			size_t len = strnlen(offer_packet.sname, sizeof(offer_packet.sname));
 			char *buffer = escape_data(offer_packet.sname, len);
 			printf("%s\n", buffer);
 			free(buffer);
@@ -639,7 +655,9 @@ static unsigned int get_dhcp_offer(const int sock, const uint32_t xid, const cha
 		printf("  BOOTP file: ");
 		if(offer_packet.file[0] != 0)
 		{
-			size_t len = strlen(offer_packet.file);
+			// file is a fixed-size field that a malicious OFFER may
+			// leave unterminated, so bound the length to the field size
+			size_t len = strnlen(offer_packet.file, sizeof(offer_packet.file));
 			char *buffer = escape_data(offer_packet.file, len);
 			printf("%s\n", buffer);
 			free(buffer);

@@ -37,8 +37,11 @@
 // (XSS) flaw exists, and a user accidentally accesses a link that exploits this
 // flaw, the browser (primarily Internet Explorer) will not reveal the cookie to
 // a third party.
-#define FTL_SET_COOKIE "Set-Cookie: sid=%s; SameSite=Lax; Path=/; Max-Age=%u; HttpOnly\r\n"
-#define FTL_DELETE_COOKIE "Set-Cookie: sid=deleted; SameSite=Lax; Path=/; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT;\r\n"
+// The trailing %s carries the "; Secure" attribute, which is only appended
+// when the session was established over TLS (see call sites). Adding Secure on
+// plain HTTP would make browsers drop the cookie, breaking non-TLS setups.
+#define FTL_SET_COOKIE "Set-Cookie: sid=%s; SameSite=Lax; Path=/; Max-Age=%u; HttpOnly%s\r\n"
+#define FTL_DELETE_COOKIE "Set-Cookie: sid=deleted; SameSite=Lax; Path=/; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT;%s\r\n"
 
 struct session {
 	bool used;

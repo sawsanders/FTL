@@ -113,6 +113,10 @@ void go_daemon(void)
 		exit(EXIT_SUCCESS);
 	}
 
+	// We are the final daemon process with a new PID after the double fork,
+	// drop any cached lock-owner PID/TID inherited from before the fork
+	reset_lock_owner_cache();
+
 	savePID();
 
 	// Closing stdin, stdout and stderr is handled by dnsmasq

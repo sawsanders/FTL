@@ -705,10 +705,10 @@ int get_sensors_obj(struct ftl_conn *api, cJSON *sensors, const bool add_list)
 	int cpu_temp_sensor = -1;
 
 	// Loop over all sensors
-	for(int i = 0; i < cJSON_GetArraySize(list); i++)
+	int i = 0;
+	for(cJSON *sensor = list != NULL ? list->child : NULL; sensor != NULL; sensor = sensor->next, i++)
 	{
 		// Get sensor object
-		cJSON *sensor = cJSON_GetArrayItem(list, i);
 
 		// Get sensor name
 		cJSON *name = cJSON_GetObjectItemCaseSensitive(sensor, "name");
@@ -948,10 +948,9 @@ static int api_info_messages_GET(struct ftl_conn *api)
 		cJSON *filtered = cJSON_CreateArray();
 
 		// Loop over all messages
-		for(int i = 0; i < cJSON_GetArraySize(messages); i++)
+		cJSON *message = NULL;
+		cJSON_ArrayForEach(message, messages)
 		{
-			// Get message
-			cJSON *message = cJSON_GetArrayItem(messages, i);
 			if(message == NULL)
 				continue;
 

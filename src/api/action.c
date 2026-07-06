@@ -74,8 +74,9 @@ static int run_and_stream_command(struct ftl_conn *api, const char *path, const 
 		// Run pihole -g
 		execv(path, (char *const *)args);
 
-		// Exit the fork
-		exit(EXIT_SUCCESS);
+		// execv() only returns if it failed, so the command never ran.
+		// Exit non-zero so the parent reports the action as failed.
+		exit(EXIT_FAILURE);
 	}
 	else
 	{
@@ -89,8 +90,12 @@ static int run_and_stream_command(struct ftl_conn *api, const char *path, const 
 		// Read readirected STDOUT/STDERR until EOF
 		// We are only interested in the last pipe line
 		char errbuf[1024] = "";
-		while(read(pipefd[0], errbuf, sizeof(errbuf)) > 0)
+		ssize_t nread;
+		while((nread = read(pipefd[0], errbuf, sizeof(errbuf) - 1)) > 0)
 		{
+			// NUL-terminate what we just read so the string
+			// operations below cannot read past the buffer
+			errbuf[nread] = '\0';
 			// Send chunked data
 			// The chunked size is the length of the string in hex and has to be
 			// transferred in advance, followed by \r\n as line separator and

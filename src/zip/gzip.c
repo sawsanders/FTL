@@ -301,6 +301,8 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 	if(ret != Z_OK)
 	{
 		log_warn("Failed to uncompress: %s", zError(ret));
+		free(*buffer_uncompressed);
+		*buffer_uncompressed = NULL;
 		return false;
 	}
 
@@ -308,6 +310,8 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 	if(crc != mz_crc32(MZ_CRC32_INIT, *buffer_uncompressed, *size_uncompressed))
 	{
 		log_warn("Checksum mismatch");
+		free(*buffer_uncompressed);
+		*buffer_uncompressed = NULL;
 		return false;
 	}
 

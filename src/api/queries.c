@@ -182,6 +182,11 @@ int api_queries_suggestions(struct ftl_conn *api)
 #define JOINSTR "JOIN client_by_id c ON q.client = c.id JOIN domain_by_id d ON q.domain = d.id LEFT JOIN forward_by_id f ON q.forward = f.id LEFT JOIN addinfo_by_id a ON a.id = q.additional_info"
 #define QUERYSTRBUFFERLEN 4096
 
+// Hard upper bound on the number of query rows materialized into a single
+// JSON response. This prevents /api/queries from exhausting memory by
+// building the entire (in-memory or on-disk) query history as one document.
+#define API_QUERIES_MAX_ROWS 10000
+
 static void add_querystr_string(struct ftl_conn *api, char *querystr, const char *sql, const char *val, bool *where)
 {
 	const size_t strpos = strlen(querystr);
@@ -404,6 +409,15 @@ int api_queries(struct ftl_conn *api)
 		// Note: We do not accept zero query requests here
 		get_int_var(api->request->query_string, "length", &length);
 
+		// Enforce a hard upper bound on the number of rows materialized into
+		// the JSON response to prevent memory-exhaustion DoS. This cap applies
+		// regardless of disk=true and regardless of the requested length.
+		// Deliberate, documented behavior change: the length <= 0 ("all") case
+		// is limited to the cap as well, so "all" now means "all up to
+		// API_QUERIES_MAX_ROWS".
+		if(length <= 0 || length > API_QUERIES_MAX_ROWS)
+			length = API_QUERIES_MAX_ROWS;
+
 		// Does the user request an offset from the cursor?
 		get_uint_var(api->request->query_string, "start", &start);
 
@@ -490,7 +504,9 @@ int api_queries(struct ftl_conn *api)
 				char search_col_id_str[32] = { 0 };
 				if(GET_VAR(search_col_id, search_col_id_str, api->request->query_string) > 0)
 				{
-					size_t searchlen = min(strlen(search[j]), sizeof(search[j]) - 2);
+					// Leave room for a leading and a trailing wildcard
+					// plus the terminating NUL that are added below
+					size_t searchlen = min(strlen(search[j]), sizeof(search[j]) - 3);
 
 					// Replace "*" by SQLite3 wildcard character "%"
 					for(unsigned int i = 0; i < searchlen; i++)
@@ -500,8 +516,10 @@ int api_queries(struct ftl_conn *api)
 					}
 
 					// Add % at the end of the search string to
-					// make it a wildcard if there is none
-					if(search[j][searchlen - 1] != '%')
+					// make it a wildcard if there is none. Guard against
+					// searchlen == 0 (empty value), which would make
+					// searchlen - 1 underflow into an out-of-bounds read.
+					if(searchlen == 0 || search[j][searchlen - 1] != '%')
 					{
 						search[j][searchlen] = '%';
 						search[j][searchlen + 1] = '\0';
@@ -1130,10 +1148,9 @@ bool compile_filter_regex(struct ftl_conn *api, const char *path, cJSON *json, r
 	if(N < 1)
 		return false;
 
-	// Set number of regexes (positive = unsigned integer)
-	*N_regex = N;
-
-	// Allocate memory for regex array
+	// Allocate memory for the regex array. N is the upper bound; empty or
+	// invalid entries are skipped below, so the number actually compiled
+	// (reported via *N_regex) may be smaller.
 	*regex = calloc(N, sizeof(regex_t));
 	if(*regex == NULL)
 	{
@@ -1164,6 +1181,15 @@ bool compile_filter_regex(struct ftl_conn *api, const char *path, cJSON *json, r
 			regerror(rc, &(*regex)[i], errbuf, sizeof(errbuf));
 			log_err("Failed to compile regex \"%s\": %s",
 			        filter->valuestring, errbuf);
+
+			// Release the regexes compiled so far and the array itself
+			// before returning so the partially-built array does not leak
+			for(unsigned int j = 0; j < i; j++)
+				regfree(&(*regex)[j]);
+			free(*regex);
+			*regex = NULL;
+			*N_regex = 0;
+
 			return send_json_error(api, 400,
 			                       "bad_request",
 			                       "Failed to compile regex",
@@ -1171,6 +1197,22 @@ bool compile_filter_regex(struct ftl_conn *api, const char *path, cJSON *json, r
 		}
 
 		i++;
+	}
+
+	// Only the first i slots were actually compiled; skipped (empty or
+	// invalid) entries leave zero-initialized regex_t slots behind. Report
+	// the real count so the caller never runs regexec()/regfree() over an
+	// uncompiled slot, whose NULL program pointer would crash the daemon
+	// (and, since one process serves DNS, take resolution down with it).
+	*N_regex = i;
+
+	// If no valid regex remained, drop the unused allocation and report that
+	// no filtering is in effect for this list.
+	if(i == 0)
+	{
+		free(*regex);
+		*regex = NULL;
+		return false;
 	}
 
 	// We are filtering, so we have to continue to step over the

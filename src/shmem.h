@@ -172,6 +172,10 @@ void _lock_shm(const char* func, const int line, const char* file);
 // Return if the current mutex locked the SHM lock
 bool is_our_lock(void);
 
+// Reset the cached lock-owner PID/TID. Must be called by the child after a
+// fork() so it does not report the parent's IDs.
+void reset_lock_owner_cache(void);
+
 /// Unlock the lock. Only call this if there is an active lock.
 #define unlock_shm() _unlock_shm(__FUNCTION__, __LINE__, __FILE__)
 void _unlock_shm(const char* func, const int line, const char* file);

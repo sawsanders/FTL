@@ -810,8 +810,9 @@ static int process_received_tar_gz(struct ftl_conn *api, struct upload_data *dat
 			         extract_files[i].archive_name);
 			continue;
 		}
-		// all other values of i belong to config files
-		else if(data->import != NULL && !JSON_KEY_TRUE(data->import, "config"))
+		// all other values of i belong to config files (i == 1 is
+		// dhcp.leases and is controlled solely by the flag above)
+		else if(i != 1 && data->import != NULL && !JSON_KEY_TRUE(data->import, "config"))
 		{
 			log_info("Skipping import of \"%s\" as it was not requested for import",
 			         extract_files[i].archive_name);
@@ -880,6 +881,7 @@ static int process_received_tar_gz(struct ftl_conn *api, struct upload_data *dat
 	}
 
 	// Free allocated memory
+	free(archive);
 	free_upload_data(data);
 
 	// Migrate the config to v6

@@ -46,10 +46,21 @@ int request_handler(struct mg_connection *conn, void *cbdata)
 	/* Handler may access the request info using mg_get_request_info */
 	const struct mg_request_info *req_info = mg_get_request_info(conn);
 
+	// Base all routing and authentication decisions on the CLEANED URI
+	// (local_uri), never on local_uri_raw. Both are URL-decoded, but
+	// local_uri_raw still contains dot-segments (e.g. "/x/../admin/...")
+	// while CivetWeb resolves and serves the file from the normalized
+	// local_uri. Deciding on the raw path let a request whose normalized
+	// form points into the protected web home appear "not in webhome" and
+	// be served without authentication.
+	const char *uri = req_info->local_uri;
+	if(uri == NULL)
+		return 0;
+
 	// Do not redirect for ACME challenges
-	log_debug(DEBUG_WEBSERVER, "Local URI: \"%s\"", req_info->local_uri_raw);
+	log_debug(DEBUG_WEBSERVER, "Local URI: \"%s\"", uri);
 	const char acme_challenge[] = "/.well-known/acme-challenge/";
-	const bool is_acme = strncmp(req_info->local_uri_raw, acme_challenge, strlen(acme_challenge)) == 0;
+	const bool is_acme = strncmp(uri, acme_challenge, strlen(acme_challenge)) == 0;
 	if(is_acme)
 	{
 		// ACME challenge - no authentication required
@@ -61,9 +72,9 @@ int request_handler(struct mg_connection *conn, void *cbdata)
 	// start with something else than config.webserver.paths.webhome. If so,
 	// send error 404
 	if(!config.webserver.serve_all.v.b &&
-	   strncmp(req_info->local_uri_raw, config.webserver.paths.webhome.v.s, strlen(config.webserver.paths.webhome.v.s)) != 0)
+	   strncmp(uri, config.webserver.paths.webhome.v.s, strlen(config.webserver.paths.webhome.v.s)) != 0)
 	{
-		log_debug(DEBUG_WEBSERVER, "Not serving %s, returning 404", req_info->local_uri_raw);
+		log_debug(DEBUG_WEBSERVER, "Not serving %s, returning 404", uri);
 		mg_send_http_error(conn, 404, "Not Found");
 		return 404;
 	}
@@ -76,10 +87,12 @@ int request_handler(struct mg_connection *conn, void *cbdata)
 
 	// Check if the request is for the API under <webhome>api
 	// (it is posted at /api)
-	if(strncmp(req_info->local_uri_raw, admin_api_uri, strlen(admin_api_uri)) == 0)
+	if(strncmp(uri, admin_api_uri, strlen(admin_api_uri)) == 0)
 	{
 		const size_t hint_len = 38 + strlen(admin_api_uri) + 2*strlen(config.webserver.domain.v.s);
 		char *hint = calloc(hint_len, sizeof(char));
+		if(hint == NULL)
+			return send_http_internal_error(&api);
 		snprintf(hint, hint_len, "The API is hosted at %s/api, not %s%s",
 		         config.webserver.domain.v.s, config.webserver.domain.v.s, admin_api_uri);
 		hint[hint_len - 1u] = '\0';
@@ -91,19 +104,19 @@ int request_handler(struct mg_connection *conn, void *cbdata)
 	}
 
 	// Check if last part of the URI contains a dot (is a file)
-	const char *last_dot = strrchr(req_info->local_uri_raw, '.');
-	const char *last_slash = strrchr(req_info->local_uri_raw, '/');
+	const char *last_dot = strrchr(uri, '.');
+	const char *last_slash = strrchr(uri, '/');
 	const bool no_dot = (last_dot == NULL || last_slash > last_dot);
 
 	// Check if the request is for the login page
-	const bool login = (strcmp(req_info->local_uri_raw, login_uri) == 0);
+	const bool login = (strcmp(uri, login_uri) == 0);
 
 	// Check if the request is for something in the webhome directory
-	const bool in_webhome = (strncmp(req_info->local_uri_raw,
+	const bool in_webhome = (strncmp(uri,
 	                                 config.webserver.paths.webhome.v.s,
 	                                 strlen(config.webserver.paths.webhome.v.s)) == 0);
 	log_debug(DEBUG_WEBSERVER, "Request for %s, login: %d, in_webhome: %d, no_dot: %d",
-	          req_info->local_uri_raw, login, in_webhome, no_dot);
+	          uri, login, in_webhome, no_dot);
 
 	// Check if the request is for a LUA page (every XYZ.lp has already been
 	// rewritten at this point to XYZ), we also don't enforce authentication

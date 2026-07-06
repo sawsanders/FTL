@@ -356,6 +356,27 @@ static int api_list_write(struct ftl_conn *api,
 
 	bool okay = true;
 	char *regex_msg = NULL;
+
+	// Pre-pass: every array element must be a string. This covers ALL list
+	// types (including GRAVITY_GROUPS, where the type-specific validation
+	// below is skipped) so a non-string element can never reach the SQL bind
+	// or error logging with a NULL valuestring.
+	{
+		cJSON *it = NULL;
+		cJSON_ArrayForEach(it, row.items)
+		{
+			if(!cJSON_IsString(it))
+			{
+				if(allocated_json)
+					cJSON_Delete(row.items);
+				return send_json_error(api, 400, // 400 Bad Request
+				                       "bad_request",
+				                       "all array items must be strings",
+				                       NULL);
+			}
+		}
+	}
+
 	if(listtype == GRAVITY_DOMAINLIST_ALLOW_REGEX || listtype == GRAVITY_DOMAINLIST_DENY_REGEX)
 	{
 		// Test validity of this regex
@@ -435,6 +456,8 @@ static int api_list_write(struct ftl_conn *api,
 					if (rc != IDN2_OK)
 					{
 						// Invalid domain name
+						if(allocated_json)
+							cJSON_Delete(row.items);
 						return send_json_error(api, 400,
 						                       "bad_request",
 						                       "Invalid request: Invalid domain name",

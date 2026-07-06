@@ -32,10 +32,12 @@ bool validate_dns_hosts(union conf_value *val, const char *key, char err[VALIDAT
 		return false;
 	}
 
-	for(int i = 0; i < cJSON_GetArraySize(val->json); i++)
+	// Walk the linked list directly: cJSON_GetArrayItem() is O(index) and
+	// cJSON_GetArraySize() in the loop condition re-walks the whole list
+	// every iteration, which made this loop O(n^2). item->next is O(1).
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
 	{
-		// Get array item
-		cJSON *item = cJSON_GetArrayItem(val->json, i);
 
 		// Check if it's a string
 		if(!cJSON_IsString(item))
@@ -43,6 +45,21 @@ bool validate_dns_hosts(union conf_value *val, const char *key, char err[VALIDAT
 			snprintf(err, VALIDATOR_ERRBUF_LEN, "%s[%d]: not a string",
 			         key, i);
 			return false;
+		}
+
+		// Check if the string contains newline characters
+		// Unlike the tokenizer below (which stops at the first '#'
+		// comment), this scans the entire entry so an embedded newline
+		// cannot be smuggled into the generated hosts file
+		const unsigned int len = strlen(item->valuestring);
+		for(unsigned int k = 0; k < len; k++)
+		{
+			if(item->valuestring[k] == '\n' || item->valuestring[k] == '\r')
+			{
+				snprintf(err, VALIDATOR_ERRBUF_LEN, "%s[%d]: contains newline characters",
+				         key, i);
+				return false;
+			}
 		}
 
 		// Check if it's in the form "IP[ \t]HOSTNAME"
@@ -136,10 +153,12 @@ bool validate_dns_cnames(union conf_value *val, const char *key, char err[VALIDA
 		return false;
 	}
 
-	for(int i = 0; i < cJSON_GetArraySize(val->json); i++)
+	// Walk the linked list directly: cJSON_GetArrayItem() is O(index) and
+	// cJSON_GetArraySize() in the loop condition re-walks the whole list
+	// every iteration, which made this loop O(n^2). item->next is O(1).
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
 	{
-		// Get array item
-		cJSON *item = cJSON_GetArrayItem(val->json, i);
 
 		// Check if it's a string
 		if(!cJSON_IsString(item))
@@ -357,10 +376,12 @@ bool validate_regex_array(union conf_value *val, const char *key, char err[VALID
 		return false;
 	}
 
-	for(int i = 0; i < cJSON_GetArraySize(val->json); i++)
+	// Walk the linked list directly: cJSON_GetArrayItem() is O(index) and
+	// cJSON_GetArraySize() in the loop condition re-walks the whole list
+	// every iteration, which made this loop O(n^2). item->next is O(1).
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
 	{
-		// Get array item
-		cJSON *item = cJSON_GetArrayItem(val->json, i);
 
 		// Check if it's a string
 		if(!cJSON_IsString(item))
@@ -395,10 +416,12 @@ bool validate_dns_revServers(union conf_value *val, const char *key, char err[VA
 	}
 
 	// Iterate over all array items
-	for(int i = 0; i < cJSON_GetArraySize(val->json); i++)
+	// Walk the linked list directly: cJSON_GetArrayItem() is O(index) and
+	// cJSON_GetArraySize() in the loop condition re-walks the whole list
+	// every iteration, which made this loop O(n^2). item->next is O(1).
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
 	{
-		// Get array item
-		cJSON *item = cJSON_GetArrayItem(val->json, i);
 
 		// Check if it's a string
 		if(!cJSON_IsString(item))
@@ -590,10 +613,12 @@ void sanitize_dns_hosts(union conf_value *val)
 	if(!cJSON_IsArray(val->json))
 		return;
 
-	for(int i = 0; i < cJSON_GetArraySize(val->json); i++)
+	// Walk the linked list directly: cJSON_GetArrayItem() is O(index) and
+	// cJSON_GetArraySize() in the loop condition re-walks the whole list
+	// every iteration, which made this loop O(n^2). item->next is O(1).
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
 	{
-		// Get array item
-		cJSON *item = cJSON_GetArrayItem(val->json, i);
 
 		// Check if it's a string
 		if(!cJSON_IsString(item))
@@ -756,10 +781,12 @@ bool validate_array_no_newline(union conf_value *val, const char *key, char err[
 		return false;
 	}
 
-	for(int i = 0; i < cJSON_GetArraySize(val->json); i++)
+	// Walk the linked list directly: cJSON_GetArrayItem() is O(index) and
+	// cJSON_GetArraySize() in the loop condition re-walks the whole list
+	// every iteration, which made this loop O(n^2). item->next is O(1).
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
 	{
-		// Get array item
-		cJSON *item = cJSON_GetArrayItem(val->json, i);
 
 		// Check if it's a string
 		if(!cJSON_IsString(item))

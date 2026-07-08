@@ -534,22 +534,23 @@ if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
     set(CMAKE_INSTALL_PREFIX "/usr" CACHE PATH "..." FORCE)
 endif()
 
-option(USE_MBED_TLS "Build FTL with TLS support, if available" ON)
+option(USE_TLS "Build FTL with TLS support, if available" ON)
 
-find_library(LIBMBEDCRYPTO NAMES lmbedcrypto${LIBRARY_SUFFIX} mbedcrypto)
-find_library(LIBMBEDX509 NAMES lmbedx509${LIBRARY_SUFFIX} mbedx509)
-find_library(LIBMBEDTLS NAMES lmbedtls${LIBRARY_SUFFIX} mbedtls)
-if(LIBMBEDCRYPTO AND LIBMBEDX509 AND LIBMBEDTLS AND USE_MBED_TLS)
-    # Enable TLS support in civetweb if mbedTLS is selected and available
+find_library(LIBSSL NAMES libssl${LIBRARY_SUFFIX} ssl)
+find_library(LIBCRYPTO NAMES libcrypto${LIBRARY_SUFFIX} crypto)
+if(LIBSSL AND LIBCRYPTO AND USE_TLS)
+    # Enable TLS support in civetweb using its OpenSSL backend
     message(STATUS "Building FTL with TLS support: YES")
-    target_compile_definitions(core PRIVATE HAVE_MBEDTLS)
-    target_compile_definitions(civetweb PRIVATE USE_MBEDTLS)
-    target_compile_definitions(webserver PRIVATE HAVE_MBEDTLS)
-    target_compile_definitions(dotdoh PRIVATE HAVE_MBEDTLS)
-    # Link against the mbedTLS libraries, the order is important (!)
-    target_link_libraries(pihole-FTL ${LIBMBEDTLS} ${LIBMBEDX509} ${LIBMBEDCRYPTO})
+    target_compile_definitions(core PRIVATE HAVE_TLS)
+    # OPENSSL_API_3_0 selects civetweb's OpenSSL backend, NO_SSL_DL (set in
+    # the civetweb CMakeLists) links it statically instead of via dlopen
+    target_compile_definitions(civetweb PRIVATE OPENSSL_API_3_0)
+    target_compile_definitions(webserver PRIVATE HAVE_TLS)
+    target_compile_definitions(dotdoh PRIVATE HAVE_TLS)
+    # Link against OpenSSL, the order is important (libssl depends on libcrypto)
+    target_link_libraries(pihole-FTL ${LIBSSL} ${LIBCRYPTO})
 else()
-    # Disable TLS support in civetweb if mbedTLS is not selected or not available
+    # Disable TLS support in civetweb if OpenSSL is not selected or not available
     message(STATUS "Building FTL with TLS support: NO")
     target_compile_definitions(civetweb PRIVATE NO_SSL)
 endif()

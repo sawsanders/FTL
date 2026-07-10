@@ -20,9 +20,28 @@
 #endif
 
 #ifdef HAVE_TLS
+/*
+ * dnsmasq.h (included above) defines common allocator names like `free` and
+ * `strdup` as macros expanding to FTL's tracked wrappers. If still active while
+ * the OpenSSL headers are included, they get expanded inside OpenSSL's
+ * declarations/inline functions and produce invalid code (the exact breakage
+ * depends on the OpenSSL version). Undefine them around the includes and
+ * restore afterwards - the same protection src/FTL.h applies to its own system
+ * headers.
+ */
+#ifdef __GNUC__
+#pragma push_macro("free")
+#pragma push_macro("strdup")
+#undef free
+#undef strdup
+#endif
 #include <openssl/opensslv.h>
 #include <openssl/crypto.h>
 #include <openssl/provider.h>
+#ifdef __GNUC__
+#pragma pop_macro("strdup")
+#pragma pop_macro("free")
+#endif
 #endif
 
 #include "FTL.h"

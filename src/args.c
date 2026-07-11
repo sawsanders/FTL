@@ -1134,11 +1134,10 @@ void parse_args(int argc, char *argv[])
 #ifdef HAVE_TLS
 			printf("****************************** %s%sOpenSSL%s ******************************\n",
 			       yellow, bold, normal);
-			printf("Version:         %s%s%s%s\n", green, bold, OpenSSL_version(OPENSSL_VERSION), normal);
+			printf("Version:         %s%s"OPENSSL_FULL_VERSION_STR"%s\n", green, bold, normal);
 			printf("Built on:        %s\n", openssl_value(OpenSSL_version(OPENSSL_BUILT_ON)));
 			printf("Platform:        %s\n", openssl_value(OpenSSL_version(OPENSSL_PLATFORM)));
 			printf("CPU info:        %s\n", openssl_value(OpenSSL_version(OPENSSL_CPU_INFO)));
-			printf("Directory:       %s\n", openssl_value(OpenSSL_version(OPENSSL_DIR)));
 			printf("Providers:       default: %s%s%s, legacy: %s%s%s, fips: %s%s%s\n",
 			       OSSL_PROVIDER_available(NULL, "default") ? green : red,
 			       OSSL_PROVIDER_available(NULL, "default") ? "Yes" : "No", normal,
@@ -1146,15 +1145,13 @@ void parse_args(int argc, char *argv[])
 			       OSSL_PROVIDER_available(NULL, "legacy") ? "Yes" : "No", normal,
 			       OSSL_PROVIDER_available(NULL, "fips") ? green : red,
 			       OSSL_PROVIDER_available(NULL, "fips") ? "Yes" : "No", normal);
-			// QUIC (needed for DoQ/DoH3) is available from OpenSSL 3.5
-			// onwards, unless the library was built with no-quic. Use the
-			// runtime version so this stays consistent with "Version:" above.
-#if defined(OPENSSL_NO_QUIC)
+			// QUIC (needed for DoQ/DoH3) is available from OpenSSL
+			// 3.5 onwards, unless the library was built with the
+			// build-time option "no-quic".
+#if defined(OPENSSL_NO_QUIC) || !defined(OPENSSL_VERSION_NUMBER) || OPENSSL_VERSION_NUMBER < 0x30500000L
 			printf("QUIC:            %sNo%s\n", red, normal);
 #else
-			const bool have_quic = OpenSSL_version_num() >= 0x30500000L;
-			printf("QUIC:            %s%s%s\n",
-			       have_quic ? green : red, have_quic ? "Yes" : "No", normal);
+			printf("QUIC:            %sYes%s\n", green, normal);
 #endif
 			printf("\n");
 #endif /* HAVE_TLS */

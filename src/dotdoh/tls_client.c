@@ -17,28 +17,18 @@
 #include "log.h"
 #include "tls_client.h"
 
-#ifdef HAVE_MBEDTLS
+#ifdef HAVE_TLS
 
 #include "framing.h"
-#include <mbedtls/build_info.h>
-#include <mbedtls/ssl.h>
-#include <mbedtls/net_sockets.h>
-#include <mbedtls/x509_crt.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+#include <openssl/err.h>
 // For the bounded, non-blocking connect and the socket-level send timeout below.
 #include <sys/socket.h>
 #include <netdb.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <time.h>
-#if MBEDTLS_VERSION_NUMBER < 0x04000000
-// Before Mbed TLS 4.0 the RNG was wired up by hand from a CTR_DRBG seeded off
-// an entropy source; 4.0+ draws randomness from PSA and needs neither header.
-#include <mbedtls/entropy.h>
-#include <mbedtls/ctr_drbg.h>
-#endif
-#ifdef MBEDTLS_PSA_CRYPTO_C
-#include <psa/crypto.h>
-#endif
 
 // Read timeout (ms) applied to the handshake and to reading the answer. Keeps a
 // dead or slow upstream from stalling the query indefinitely; on timeout the
@@ -68,84 +58,65 @@ static const char *const TLS_DEFAULT_CA_FILES[] = {
 };
 #define TLS_DEFAULT_CA_DIR  "/etc/ssl/certs"
 
-// Shared, read-only-after-init crypto state. One trust store and (pre-4.0) one
-// DRBG are enough for all upstreams; each connection gets its own SSL context.
+// Shared, read-only-after-init crypto state. One SSL_CTX carries the trust
+// store and the fail-closed verify mode for all upstreams; each connection
+// draws its own SSL object from it. OpenSSL seeds its own RNG, so no explicit
+// DRBG is wired up here.
 static bool g_ready = false;
-static mbedtls_x509_crt g_cacert;
-#if MBEDTLS_VERSION_NUMBER < 0x04000000
-static mbedtls_entropy_context g_entropy;
-static mbedtls_ctr_drbg_context g_ctr;
-#endif
+static SSL_CTX *g_ctx = NULL;
 
 // One pooled connection per upstream. The scratch buffers live here (not on the
 // stack and not shared) so that concurrent exchanges on different connections
 // never clobber each other.
 struct tls_conn {
 	bool connected;
-	mbedtls_net_context net;
-	mbedtls_ssl_context ssl;
-	mbedtls_ssl_config conf;
+	int fd;                                         // connected TCP socket
+	SSL *ssl;
 	uint8_t req[DNS_MSG_MAX + 512];                 // framed request we send
 	uint8_t rbuf[DNS_MSG_MAX + DOH_HEADER_MAX];     // response accumulation buffer
 };
 
 bool tls_client_global_init(const char *ca_file)
 {
-	// Idempotent: the proxy may be (re)started, but the trust store only
-	// needs to be built once.
+	// Idempotent: the proxy may be (re)started, but the context only needs to
+	// be built once.
 	if(g_ready)
 		return true;
 
-#ifdef MBEDTLS_PSA_CRYPTO_C
-	// PSA must be up before any TLS work. On 4.0+ it is also the RNG
-	// source, which is why no explicit DRBG is wired below on that branch.
-	if(psa_crypto_init() != PSA_SUCCESS)
+	g_ctx = SSL_CTX_new(TLS_client_method());
+	if(g_ctx == NULL)
 	{
-		log_err("dotdoh: psa_crypto_init() failed");
+		log_err("dotdoh: SSL_CTX_new() failed");
 		return false;
 	}
-#endif
 
-#if MBEDTLS_VERSION_NUMBER < 0x04000000
-	// Pre-4.0: seed the DRBG handed to mbedtls_ssl_conf_rng() at connect
-	// time.
-	mbedtls_entropy_init(&g_entropy);
-	mbedtls_ctr_drbg_init(&g_ctr);
-	if(mbedtls_ctr_drbg_seed(&g_ctr, mbedtls_entropy_func, &g_entropy,
-	                         (const unsigned char *)"pihole-dotdoh", 15) != 0)
-	{
-		log_err("dotdoh: CTR_DRBG seeding failed");
-		mbedtls_ctr_drbg_free(&g_ctr);
-		mbedtls_entropy_free(&g_entropy);
-		return false;
-	}
-#endif
+	// Require at least TLS 1.2 for encrypted DNS upstreams.
+	SSL_CTX_set_min_proto_version(g_ctx, TLS1_2_VERSION);
+
+	// This is the fail-closed heart of the client: SSL_VERIFY_PEER makes a bad
+	// chain abort the handshake instead of merely being reported after the
+	// fact. The hostname is checked per-connection via SSL_set1_host() below.
+	SSL_CTX_set_verify(g_ctx, SSL_VERIFY_PEER, NULL);
 
 	// Load the trust anchors. An explicit path (dns.upstreamCA, or the test CA
 	// during E2E) always wins. Otherwise try each well-known system bundle and
-	// finally the hashed directory. mbedtls_x509_crt_parse_file() returns the
-	// number of certs it could not parse (>= 0) or a negative error, so only a
-	// negative result means nothing at all was loaded.
-	mbedtls_x509_crt_init(&g_cacert);
-	int rc = -1;
+	// finally the hashed directory.
+	int loaded = 0;
 	if(ca_file != NULL && ca_file[0] != '\0')
-		rc = mbedtls_x509_crt_parse_file(&g_cacert, ca_file);
+		loaded = SSL_CTX_load_verify_file(g_ctx, ca_file) == 1;
 	else
 	{
-		for(size_t i = 0; rc < 0 && i < sizeof(TLS_DEFAULT_CA_FILES) / sizeof(*TLS_DEFAULT_CA_FILES); i++)
-			rc = mbedtls_x509_crt_parse_file(&g_cacert, TLS_DEFAULT_CA_FILES[i]);
-		if(rc < 0)
-			rc = mbedtls_x509_crt_parse_path(&g_cacert, TLS_DEFAULT_CA_DIR);
+		for(size_t i = 0; !loaded && i < sizeof(TLS_DEFAULT_CA_FILES) / sizeof(*TLS_DEFAULT_CA_FILES); i++)
+			loaded = SSL_CTX_load_verify_file(g_ctx, TLS_DEFAULT_CA_FILES[i]) == 1;
+		if(!loaded)
+			loaded = SSL_CTX_load_verify_dir(g_ctx, TLS_DEFAULT_CA_DIR) == 1;
 	}
-	if(rc < 0)
+	if(!loaded)
 	{
 		log_err("dotdoh: could not load a CA trust store "
 		        "(set dns.upstreamCA or install a system CA bundle)");
-		mbedtls_x509_crt_free(&g_cacert);
-#if MBEDTLS_VERSION_NUMBER < 0x04000000
-		mbedtls_ctr_drbg_free(&g_ctr);
-		mbedtls_entropy_free(&g_entropy);
-#endif
+		SSL_CTX_free(g_ctx);
+		g_ctx = NULL;
 		return false;
 	}
 
@@ -157,17 +128,17 @@ void tls_client_global_free(void)
 {
 	if(!g_ready)
 		return;
-	mbedtls_x509_crt_free(&g_cacert);
-#if MBEDTLS_VERSION_NUMBER < 0x04000000
-	mbedtls_ctr_drbg_free(&g_ctr);
-	mbedtls_entropy_free(&g_entropy);
-#endif
+	SSL_CTX_free(g_ctx);
+	g_ctx = NULL;
 	g_ready = false;
 }
 
 struct tls_conn *tls_conn_new(void)
 {
-	return calloc(1, sizeof(struct tls_conn));
+	struct tls_conn *c = calloc(1, sizeof(struct tls_conn));
+	if(c != NULL)
+		c->fd = -1;
+	return c;
 }
 
 // Tear down an established connection so the next exchange reconnects cleanly.
@@ -176,10 +147,17 @@ static void conn_close(struct tls_conn *c)
 	if(!c->connected)
 		return;
 	// Best-effort notify; we do not care whether the peer sees it.
-	mbedtls_ssl_close_notify(&c->ssl);
-	mbedtls_ssl_free(&c->ssl);
-	mbedtls_ssl_config_free(&c->conf);
-	mbedtls_net_free(&c->net);
+	if(c->ssl != NULL)
+	{
+		SSL_shutdown(c->ssl);
+		SSL_free(c->ssl);
+		c->ssl = NULL;
+	}
+	if(c->fd >= 0)
+	{
+		close(c->fd);
+		c->fd = -1;
+	}
 	c->connected = false;
 }
 
@@ -209,12 +187,13 @@ static int ms_left(uint64_t deadline, int cap)
 	return left < (uint64_t)cap ? (int)left : cap;
 }
 
-// Bounded, non-blocking TCP connect. mbedtls_net_connect() does a blocking
-// connect() with no timeout, so a black-holed upstream (dropped SYN) would pin
-// the single worker thread for the kernel's full SYN timeout (~2 min) and stall
-// every other encrypted upstream with it. Connect non-blocking and poll() for
-// the deadline instead, then hand the ready socket to mbedTLS.
-static int net_connect_timeout(mbedtls_net_context *net, const char *host,
+// Bounded, non-blocking TCP connect returning a connected socket in *out_fd. A
+// plain blocking connect() has no timeout, so a black-holed upstream (dropped
+// SYN) would pin the single worker thread for the kernel's full SYN timeout
+// (~2 min) and stall every other encrypted upstream with it. Connect
+// non-blocking and poll() for the deadline instead, then restore blocking mode
+// for the OpenSSL I/O.
+static int net_connect_timeout(int *out_fd, const char *host,
                                const char *port, int timeout_ms)
 {
 	struct addrinfo hints = { 0 };
@@ -224,14 +203,14 @@ static int net_connect_timeout(mbedtls_net_context *net, const char *host,
 
 	struct addrinfo *res = NULL;
 	if(getaddrinfo(host, port, &hints, &res) != 0)
-		return MBEDTLS_ERR_NET_UNKNOWN_HOST;
+		return -1;
 
 	// timeout_ms is the budget for the whole connect, not per address: share
 	// the remaining time across every A/AAAA record rather than restarting the
 	// full timeout for each, so a multi-homed host cannot blow the deadline.
 	const uint64_t deadline = now_ms() + (uint64_t)timeout_ms;
 
-	int ret = MBEDTLS_ERR_NET_CONNECT_FAILED;
+	int ret = -1;
 	for(struct addrinfo *cur = res; cur != NULL; cur = cur->ai_next)
 	{
 		// SOCK_CLOEXEC so a connected upstream socket is not inherited across
@@ -256,8 +235,8 @@ static int net_connect_timeout(mbedtls_net_context *net, const char *host,
 		   poll(&pfd, 1, ms_left(deadline, timeout_ms)) == 1 && (pfd.revents & POLLOUT) &&
 		   getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) == 0 && soerr == 0)
 		{
-			fcntl(fd, F_SETFL, flags); // restore blocking mode for mbedTLS I/O
-			net->fd = fd;
+			fcntl(fd, F_SETFL, flags); // restore blocking mode for OpenSSL I/O
+			*out_fd = fd;
 			ret = 0;
 			break;
 		}
@@ -273,67 +252,56 @@ static int net_connect_timeout(mbedtls_net_context *net, const char *host,
 // bounds the connect and handshake so a stalled peer cannot pin the worker.
 static bool conn_connect(struct tls_conn *c, const struct upstream_uri *u, uint64_t deadline)
 {
-	mbedtls_net_init(&c->net);
-	mbedtls_ssl_init(&c->ssl);
-	mbedtls_ssl_config_init(&c->conf);
+	c->fd = -1;
+	c->ssl = NULL;
 
 	// net_connect_timeout() wants the port as a string.
 	char portstr[8];
 	snprintf(portstr, sizeof(portstr), "%d", u->port);
 
-	int rc;
-	if((rc = net_connect_timeout(&c->net, u->connect_host, portstr,
-	                             ms_left(deadline, TLS_CONNECT_TIMEOUT_MS))) != 0)
+	if(net_connect_timeout(&c->fd, u->connect_host, portstr,
+	                       ms_left(deadline, TLS_CONNECT_TIMEOUT_MS)) != 0)
 	{
-		log_warn("dotdoh: connect to %s#%d failed (mbedtls -0x%04x)",
-		         u->connect_host, u->port, (unsigned)-rc);
+		log_warn("dotdoh: connect to %s#%d failed", u->connect_host, u->port);
 		goto fail;
 	}
 
-	// Bound blocking sends too: the write BIO (mbedtls_net_send) has no timeout
-	// of its own, so without this a peer that stops reading would block
-	// ssl_write_all() forever once its receive window fills.
-	const struct timeval sndto = { .tv_sec = TLS_READ_TIMEOUT_MS / 1000, .tv_usec = 0 };
-	setsockopt(c->net.fd, SOL_SOCKET, SO_SNDTIMEO, &sndto, sizeof(sndto));
+	// Bound blocking reads and sends: the socket has no timeout of its own, so
+	// without these a peer that stops sending (or stops reading, once its
+	// receive window fills) would block SSL_read()/SSL_write() forever. On a
+	// timeout the call returns an error and the exchange fails over.
+	const struct timeval to = { .tv_sec = TLS_READ_TIMEOUT_MS / 1000,
+	                            .tv_usec = (TLS_READ_TIMEOUT_MS % 1000) * 1000 };
+	setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &to, sizeof(to));
+	setsockopt(c->fd, SOL_SOCKET, SO_SNDTIMEO, &to, sizeof(to));
 
-	if(mbedtls_ssl_config_defaults(&c->conf, MBEDTLS_SSL_IS_CLIENT,
-	                               MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0)
+	c->ssl = SSL_new(g_ctx);
+	if(c->ssl == NULL)
 		goto fail;
 
-	// This is the fail-closed heart of the client: REQUIRED means a bad
-	// chain or hostname mismatch aborts the handshake instead of merely
-	// being reported after the fact.
-	mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
-	mbedtls_ssl_conf_ca_chain(&c->conf, &g_cacert, NULL);
-	mbedtls_ssl_conf_read_timeout(&c->conf, TLS_READ_TIMEOUT_MS);
-#if MBEDTLS_VERSION_NUMBER < 0x04000000
-	// 4.0+ pulls randomness from PSA automatically; only older versions need
-	// the DRBG wired in explicitly.
-	mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &g_ctr);
-#endif
+	// verify_name is the hostname the certificate is checked against and the
+	// SNI sent to the server. For a pinned "sni-host@ip" upstream this is the
+	// hostname, not the IP, so verification still matches the real cert.
+	// SSL_set1_host() ties the (fail-closed) chain verification to this name.
+	if(SSL_set1_host(c->ssl, u->verify_name) != 1)
+		goto fail;
+	SSL_set_tlsext_host_name(c->ssl, u->verify_name);
 
-	if(mbedtls_ssl_setup(&c->ssl, &c->conf) != 0)
+	if(SSL_set_fd(c->ssl, c->fd) != 1)
 		goto fail;
 
-	// verify_name is the hostname the certificate is checked against and
-	// the SNI sent to the server. For a pinned "sni-host@ip" upstream this
-	// is the hostname, not the IP, so verification still matches the real
-	// cert.
-	if(mbedtls_ssl_set_hostname(&c->ssl, u->verify_name) != 0)
-		goto fail;
-
-	// Use the timeout-aware receive callback so the read timeout above
-	// applies.
-	mbedtls_ssl_set_bio(&c->ssl, &c->net, mbedtls_net_send, NULL, mbedtls_net_recv_timeout);
-
-	// Blocking sockets should not normally yield WANT_READ/WANT_WRITE, but
-	// the read timeout can surface them; loop until the handshake resolves.
-	while((rc = mbedtls_ssl_handshake(&c->ssl)) != 0)
+	// Blocking sockets should not normally yield WANT_READ/WANT_WRITE, but the
+	// socket read timeout can surface them; loop until the handshake resolves
+	// or the deadline passes. A verification failure (bad chain or hostname)
+	// returns a hard error here, which is exactly the fail-closed behaviour.
+	int rc;
+	while((rc = SSL_connect(c->ssl)) != 1)
 	{
-		if(rc != MBEDTLS_ERR_SSL_WANT_READ && rc != MBEDTLS_ERR_SSL_WANT_WRITE)
+		const int err = SSL_get_error(c->ssl, rc);
+		if(err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE)
 		{
-			log_warn("dotdoh: TLS handshake with %s (%s#%d) failed (mbedtls -0x%04x)",
-			         u->verify_name, u->connect_host, u->port, (unsigned)-rc);
+			log_warn("dotdoh: TLS handshake with %s (%s#%d) failed",
+			         u->verify_name, u->connect_host, u->port);
 			goto fail;
 		}
 		if(now_ms() >= deadline)
@@ -349,10 +317,17 @@ static bool conn_connect(struct tls_conn *c, const struct upstream_uri *u, uint6
 
 fail:
 	// We never reached the "connected" state, so free the half-initialised
-	// contexts directly rather than via conn_close().
-	mbedtls_ssl_free(&c->ssl);
-	mbedtls_ssl_config_free(&c->conf);
-	mbedtls_net_free(&c->net);
+	// objects directly rather than via conn_close().
+	if(c->ssl != NULL)
+	{
+		SSL_free(c->ssl);
+		c->ssl = NULL;
+	}
+	if(c->fd >= 0)
+	{
+		close(c->fd);
+		c->fd = -1;
+	}
 	c->connected = false;
 	return false;
 }
@@ -364,16 +339,20 @@ static bool ssl_write_all(struct tls_conn *c, const uint8_t *buf, size_t len, ui
 	size_t off = 0;
 	while(off < len)
 	{
-		int w = mbedtls_ssl_write(&c->ssl, buf + off, len - off);
-		if(w == MBEDTLS_ERR_SSL_WANT_READ || w == MBEDTLS_ERR_SSL_WANT_WRITE)
+		const int w = SSL_write(c->ssl, buf + off, (int)(len - off));
+		if(w > 0)
+		{
+			off += (size_t)w;
+			continue;
+		}
+		const int err = SSL_get_error(c->ssl, w);
+		if(err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
 		{
 			if(now_ms() >= deadline)
 				return false;
 			continue;
 		}
-		if(w <= 0)
-			return false;
-		off += (size_t)w;
+		return false;
 	}
 	return true;
 }
@@ -411,22 +390,19 @@ static ssize_t conn_do(struct tls_conn *c, const struct upstream_uri *u,
 		// fills (many hours) without ever hitting the WANT_READ deadline below.
 		if(have >= bufcap || now_ms() >= deadline)
 			return -1;
-		int r = mbedtls_ssl_read(&c->ssl, buf + have, bufcap - have);
-		// TLS 1.3 delivers post-handshake messages to the application
-		// as these non-fatal returns: a NewSessionTicket arrives right
-		// after the handshake (which the upstream sends before our
-		// answer). They are not errors - just read again for the actual
-		// response.
-		if(r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE
-#ifdef MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET
-		   // Only present on mbedTLS builds with TLS 1.3 post-handshake tickets;
-		   // guarded so older versions still compile (they never return it).
-		   || r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET
-#endif
-		   )
-			continue; // deadline is enforced at the top of the loop
+		const int r = SSL_read(c->ssl, buf + have, (int)(bufcap - have));
 		if(r <= 0)
+		{
+			// TLS 1.3 delivers post-handshake messages (e.g. a
+			// NewSessionTicket, which the upstream sends right after the
+			// handshake, before our answer) to SSL_read() as WANT_READ once
+			// it has consumed them without app data. That is not an error -
+			// just read again for the actual response.
+			const int err = SSL_get_error(c->ssl, r);
+			if(err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
+				continue; // deadline is enforced at the top of the loop
 			return -1; // timeout, close_notify or hard error
+		}
 		have += (size_t)r;
 
 		size_t off = 0, blen = 0;
@@ -489,10 +465,18 @@ ssize_t tls_exchange(struct tls_conn *c, const struct upstream_uri *u,
 	return -1;
 }
 
-#else // !HAVE_MBEDTLS
+#else // !HAVE_TLS
 
-// Without mbedTLS there is no TLS client; encrypted upstreams are unavailable
+// Without TLS there is no TLS client; encrypted upstreams are unavailable
 // and every exchange fails closed. The config layer refuses to enable them.
+// These trivial stubs are const-folding candidates, so GCC raises
+// -Wsuggest-attribute=const; the attribute cannot be applied (it conflicts with
+// tls_conn_new()'s malloc attribute), so silence the suggestion here. clang
+// does not have this warning, hence the GCC-only guard.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsuggest-attribute=const"
+#endif
 bool tls_client_global_init(const char *ca_file) { (void)ca_file; return false; }
 void tls_client_global_free(void) { }
 struct tls_conn *tls_conn_new(void) { return NULL; }
@@ -504,5 +488,8 @@ ssize_t tls_exchange(struct tls_conn *c, const struct upstream_uri *u,
 	(void)c; (void)u; (void)query; (void)qlen; (void)answer; (void)answer_sz;
 	return -1;
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
-#endif // HAVE_MBEDTLS
+#endif // HAVE_TLS

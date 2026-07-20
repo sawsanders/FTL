@@ -32,10 +32,7 @@ void dotdoh_init(void);
 // Number of encrypted upstreams that are armed and being served.
 int dotdoh_count(void) __attribute__((pure));
 
-// FTL worker thread entry: services every armed listener until shutdown.
-void *dotdoh_thread(void *val);
-
-// Release listeners, connections and the CA store.
+// Release the worker pool, listeners, connection pools and the CA store.
 void dotdoh_cleanup(void);
 
 // Map a loopback proxy tuple (127.47.11.N#(5300+N)) back to the encrypted

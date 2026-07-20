@@ -81,6 +81,32 @@ assert_padded() {  # $1 = transport (dot|doh)
   return 1
 }
 
+# Fire $2 concurrent dig queries at the proxy listener on 127.47.11.$1#(5300+$1)
+# and succeed only if every one of them resolved to the expected answer. This is
+# the meaningful concurrency test: the worker pool and per-upstream connection
+# pool must serve many in-flight exchanges at once without racing or dropping.
+run_concurrent() {  # $1 = tuple index (1=DoT, 2=DoH), $2 = number of queries
+  local idx="$1" n="$2" port=$((5300 + $1)) tmp i ok=0
+  tmp="$(mktemp -d)"
+  for i in $(seq 1 "$n"); do
+    ( dig +short +tries=1 +time=8 "@127.47.11.${idx}" -p "$port" a.ftl > "${tmp}/${i}" 2>&1 ) &
+  done
+  wait
+  for i in $(seq 1 "$n"); do
+    grep -q "192.168.1.1" "${tmp}/${i}" && ok=$((ok + 1))
+  done
+  rm -rf "$tmp"
+  echo "$ok/$n resolved"
+  [ "$ok" -eq "$n" ]
+}
+
+# Set a non-RESTART_FTL config value (e.g. a debug flag) live, no restart.
+set_debug_dotdoh() {  # $1 = true|false
+  curl -s -o /dev/null --max-time 10 -X PATCH "${FTL_URL}/api/config" \
+       -H "Content-Type: application/json" \
+       -d "{\"config\":{\"debug\":{\"dotdoh\":$1}}}" || true
+}
+
 setup_file() {
   ensure_shim || return 1
   # The DoH upstream is armed last, so waiting for it means both listeners are up.
@@ -133,4 +159,36 @@ teardown_file() {
   assert_output --partial "192.168.1.1"
   run assert_padded doh
   assert_success
+}
+
+@test "dotdoh-client: many concurrent queries over the DoT proxy all resolve" {
+  run run_concurrent 1 25
+  assert_success
+  assert_output --partial "25/25 resolved"
+}
+
+@test "dotdoh-client: many concurrent queries over the DoH proxy all resolve" {
+  run run_concurrent 2 25
+  assert_success
+  assert_output --partial "25/25 resolved"
+}
+
+@test "dotdoh-client: debug.dotdoh emits a per-upstream statistics summary" {
+  set_debug_dotdoh true
+  # Generate some traffic so the counters are non-zero.
+  for i in $(seq 1 10); do
+    dig +short +tries=1 +time=5 @127.47.11.1 -p 5301 a.ftl >/dev/null 2>&1
+  done
+  # The summary is emitted periodically (~10 s) by whichever worker is idle.
+  # Wait for one that reflects our queries to appear in the log.
+  local found=""
+  for _ in $(seq 1 20); do
+    if grep -qE "dotdoh\[pi.hole\]:.*queries=[1-9]" /var/log/pihole/FTL.log; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  set_debug_dotdoh false
+  [ -n "$found" ]
 }

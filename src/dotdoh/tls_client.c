@@ -507,7 +507,7 @@ static ssize_t conn_do(struct tls_conn *c, const struct upstream_uri *u,
 }
 
 // Seed the learned idle window from what real resolvers were measured to do.
-// DoT servers close idle connections quickly (~10 s); DoH keep-alives run much
+// DoT servers close idle connections quickly (~10 s); DoH keep-alive runs much
 // longer. A couple of known providers keep DoT connections far longer, so start
 // them high. Everything adapts from here at runtime.
 static uint64_t seed_idle_ms(const struct upstream_uri *u)

@@ -22,9 +22,12 @@
 #include "framing.h"
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
 #include <openssl/err.h>
 // For the bounded, non-blocking connect and the socket-level send timeout below.
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
 #include <fcntl.h>
@@ -279,13 +282,28 @@ static bool conn_connect(struct tls_conn *c, const struct upstream_uri *u, uint6
 	if(c->ssl == NULL)
 		goto fail;
 
-	// verify_name is the hostname the certificate is checked against and the
-	// SNI sent to the server. For a pinned "sni-host@ip" upstream this is the
-	// hostname, not the IP, so verification still matches the real cert.
-	// SSL_set1_host() ties the (fail-closed) chain verification to this name.
-	if(SSL_set1_host(c->ssl, u->verify_name) != 1)
-		goto fail;
-	SSL_set_tlsext_host_name(c->ssl, u->verify_name);
+	// verify_name is what the certificate is checked against and, for a
+	// hostname, the SNI sent to the server. For a pinned "sni-host@ip" upstream
+	// this is the hostname, not the IP, so verification still matches the real
+	// cert. A bare-IP upstream (tls://1.1.1.1 or a bracketed IPv6 literal) is
+	// verified against the certificate's iPAddress SANs instead:
+	// SSL_set1_host() only matches dNSName/CN, so an IP would never match and
+	// the upstream would be permanently unusable. RFC 6066 also forbids an IP
+	// literal as SNI, so it is not sent in that case.
+	struct in_addr v4;
+	struct in6_addr v6;
+	if(inet_pton(AF_INET, u->verify_name, &v4) == 1 ||
+	   inet_pton(AF_INET6, u->verify_name, &v6) == 1)
+	{
+		if(X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(c->ssl), u->verify_name) != 1)
+			goto fail;
+	}
+	else
+	{
+		if(SSL_set1_host(c->ssl, u->verify_name) != 1)
+			goto fail;
+		SSL_set_tlsext_host_name(c->ssl, u->verify_name);
+	}
 
 	if(SSL_set_fd(c->ssl, c->fd) != 1)
 		goto fail;

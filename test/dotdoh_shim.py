@@ -37,6 +37,13 @@ DOH_ADDR = ("127.0.0.1", 8443)
 # 128-octet boundary (RFC 8467), so a padded query arrives as a multiple of 128.
 PAD_LOG = os.environ.get("SHIM_PAD_LOG", "")
 _pad_lock = threading.Lock()
+# Optional per-response delay (ms). When set, each backend resolution sleeps this
+# long before replying, so a concurrency test can make in-flight exchanges
+# overlap (a serial client would take N*delay, a parallel one ~delay).
+try:
+    DELAY_S = float(os.environ.get("SHIM_DELAY_MS", "0")) / 1000.0
+except ValueError:
+    DELAY_S = 0.0
 
 
 def note_query(transport, query):
@@ -49,6 +56,8 @@ def note_query(transport, query):
 
 def resolve(wire):
     """Forward a DNS wire message to the plaintext backend and return the reply."""
+    if DELAY_S > 0:
+        time.sleep(DELAY_S)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(5)
     try:

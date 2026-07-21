@@ -434,6 +434,31 @@ static bool check_wildcard_domain(const char *domain, const char *san, const siz
 	return strncasecmp(wild_domain, san + 1, san_len - 1) == 0;
 }
 
+// Copy the first Common Name (CN) of an X.509 name into buf as a NUL-terminated
+// string, returning its length or -1 if there is none (or it does not fit).
+// Replaces the convenience X509_NAME_get_text_by_NID(), deprecated in OpenSSL
+// 4.0, with the plain, non-deprecated entry accessors.
+static int get_common_name(const X509_NAME *name, char *buf, size_t buflen)
+{
+	if(buflen == 0)
+		return -1;
+	buf[0] = '\0';
+	const int idx = X509_NAME_get_index_by_NID(name, NID_commonName, -1);
+	if(idx < 0)
+		return -1;
+	const X509_NAME_ENTRY *entry = X509_NAME_get_entry(name, idx);
+	const ASN1_STRING *data = entry != NULL ? X509_NAME_ENTRY_get_data(entry) : NULL;
+	if(data == NULL)
+		return -1;
+	const int len = ASN1_STRING_length(data);
+	const unsigned char *txt = ASN1_STRING_get0_data(data);
+	if(txt == NULL || len < 0 || (size_t)len >= buflen)
+		return -1;
+	memcpy(buf, txt, (size_t)len);
+	buf[len] = '\0';
+	return len;
+}
+
 // Check whether the given domain is covered by the certificate, either through
 // one of its subject alternative names (SAN) or, as a fallback, its CN.
 static bool search_domain(X509 *crt, const char *domain)
@@ -471,12 +496,12 @@ static bool search_domain(X509 *crt, const char *domain)
 
 	// Also check against the common name (CN) field
 	char cn[256] = { 0 };
-	const int cn_len = X509_NAME_get_text_by_NID(X509_get_subject_name(crt), NID_commonName, cn, sizeof(cn));
+	const int cn_len = get_common_name(X509_get_subject_name(crt), cn, sizeof(cn));
 	if(cn_len > 0)
 	{
-		// cn is NUL-terminated by X509_NAME_get_text_by_NID(); use strlen()
-		// as the length so a CN longer than the buffer cannot lead to an
-		// out-of-bounds read regardless of the returned length
+		// cn is NUL-terminated by get_common_name(); use strlen() as the length
+		// so a CN longer than the buffer cannot lead to an out-of-bounds read
+		// regardless of the returned length
 		if(strcasecmp(domain, cn) == 0)
 			found = true;
 		else if(check_wildcard_domain(domain, cn, strlen(cn)))
@@ -627,13 +652,17 @@ enum cert_check cert_currently_valid(const char *certfile, const time_t valid_fo
 		return CERT_CANNOT_PARSE_CERT;
 	}
 
-	// Compare validity of certificate
-	// - notBefore needs to be in the past (X509_cmp_time returns < 0)
-	// - notAfter needs to be further away than valid_for_at_least_days
-	//   (X509_cmp_time against that future point returns > 0)
-	time_t future = time(NULL) + valid_for_at_least_days * (24 * 3600);
-	const bool is_valid_from = X509_cmp_time(X509_get0_notBefore(crt), NULL) < 0;
-	const bool is_valid_to = X509_cmp_time(X509_get0_notAfter(crt), &future) > 0;
+	// Compare validity of certificate (X509_cmp_time() is deprecated in OpenSSL
+	// 4.0, so use ASN1_TIME_cmp_time_t(), which returns -1/0/1 on success and -2
+	// on error):
+	// - notBefore needs to be in the past (compares strictly less than now)
+	// - notAfter needs to be further away than valid_for_at_least_days (compares
+	//   strictly greater than that future point)
+	// A comparison error (-2) matches neither case, so it is treated as invalid
+	// (fail-closed).
+	const time_t future = time(NULL) + valid_for_at_least_days * (24 * 3600);
+	const bool is_valid_from = ASN1_TIME_cmp_time_t(X509_get0_notBefore(crt), time(NULL)) == -1;
+	const bool is_valid_to = ASN1_TIME_cmp_time_t(X509_get0_notAfter(crt), future) == 1;
 
 	// Free resources
 	X509_free(crt);
@@ -671,8 +700,8 @@ bool is_pihole_certificate(const char *certfile)
 	// Check if both the issuer and subject common name are "pi.hole"
 	char issuer_cn[256] = { 0 };
 	char subject_cn[256] = { 0 };
-	X509_NAME_get_text_by_NID(X509_get_issuer_name(crt), NID_commonName, issuer_cn, sizeof(issuer_cn));
-	X509_NAME_get_text_by_NID(X509_get_subject_name(crt), NID_commonName, subject_cn, sizeof(subject_cn));
+	get_common_name(X509_get_issuer_name(crt), issuer_cn, sizeof(issuer_cn));
+	get_common_name(X509_get_subject_name(crt), subject_cn, sizeof(subject_cn));
 
 	// Free resources
 	X509_free(crt);

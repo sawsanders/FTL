@@ -353,8 +353,10 @@ static bool conn_connect(struct tls_pool *p, struct tls_conn *c,
 
 	// verify_name is what the certificate is checked against and, for a
 	// hostname, the SNI sent to the server. A bare-IP upstream is verified
-	// against the certificate's iPAddress SANs instead (SSL_set1_host() only
-	// matches dNSName/CN), and RFC 6066 forbids an IP literal as SNI.
+	// against the certificate's iPAddress SANs instead (hostname matching only
+	// covers dNSName/CN), and RFC 6066 forbids an IP literal as SNI. Both bind
+	// the check to the verify param on the SSL object (SSL_set1_host() is
+	// deprecated in OpenSSL 4.0).
 	struct in_addr v4;
 	struct in6_addr v6;
 	if(inet_pton(AF_INET, u->verify_name, &v4) == 1 ||
@@ -365,7 +367,7 @@ static bool conn_connect(struct tls_pool *p, struct tls_conn *c,
 	}
 	else
 	{
-		if(SSL_set1_host(c->ssl, u->verify_name) != 1)
+		if(X509_VERIFY_PARAM_set1_host(SSL_get0_param(c->ssl), u->verify_name, 0) != 1)
 			goto fail;
 		SSL_set_tlsext_host_name(c->ssl, u->verify_name);
 	}

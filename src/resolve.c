@@ -35,6 +35,8 @@
 #include <assert.h>
 // TCP_MAX_QUERIES
 #include "dnsmasq/config.h"
+// get_secure_randomness()
+#include "config/password.h"
 
 // Function Prototypes
 static size_t nameToDNS(unsigned char *dns, const size_t dnslen, const char *host, const size_t hostlen) __attribute__((nonnull(1,3)));
@@ -291,7 +293,16 @@ static bool ngethostbyname(const int sock, const bool tcp, struct sockaddr_in *d
 {	
 	// Initialize request DNS header
 	struct DNS_HEADER dns = { 0 };
-	dns.id = (unsigned short) htons(random()); // random query ID
+
+	// Random query ID. This has to be unpredictable, as an off-path
+	// attacker who can guess it may forge a reply
+	uint16_t query_id = 0;
+	if(!get_secure_randomness((uint8_t *)&query_id, sizeof(query_id)))
+	{
+		log_err("Unable to generate a random DNS query ID");
+		return false;
+	}
+	dns.id = htons(query_id);
 	dns.qr = 0; // This is a query
 	dns.opcode = 0; // This is a standard query
 	dns.aa = 0; // Not Authoritative
@@ -378,7 +389,7 @@ static bool ngethostbyname(const int sock, const bool tcp, struct sockaddr_in *d
 		{
 			log_err("Cannot send TCP DNS query: %s", strsockerr(errno));
 			log_resolve_info(host, config.dns.port.v.u16, tcp);
-			return NULL;
+			return false;
 		}
 
 		// Receive the answer, first the length of the message ...
@@ -387,7 +398,7 @@ static bool ngethostbyname(const int sock, const bool tcp, struct sockaddr_in *d
 		{
 			log_err("Cannot receive TCP DNS reply (1): %s", strsockerr(errno));
 			log_resolve_info(host, config.dns.port.v.u16, tcp);
-			return NULL;
+			return false;
 		}
 		prefix = ntohs(prefix);
 
@@ -398,7 +409,7 @@ static bool ngethostbyname(const int sock, const bool tcp, struct sockaddr_in *d
 		{
 			log_err("Received TCP DNS reply is too long (%u bytes)", prefix);
 			log_resolve_info(host, config.dns.port.v.u16, tcp);
-			return NULL;
+			return false;
 		}
 		bzero(buf, prefix + 1);
 		// ... then the message itself
@@ -406,7 +417,7 @@ static bool ngethostbyname(const int sock, const bool tcp, struct sockaddr_in *d
 		{
 			log_err("Cannot receive TCP DNS reply (2): %s", strsockerr(errno));
 			log_resolve_info(host, config.dns.port.v.u16, tcp);
-			return NULL;
+			return false;
 		}
 	}
 

@@ -1904,7 +1904,7 @@ bool migrate_config_v6(void)
 	// Initialize the TOML config file
 	writeFTLtoml(true, NULL);
 	char errbuf[ERRBUF_SIZE] = { 0 };
-	write_dnsmasq_config(&config, false, errbuf);
+	write_dnsmasq_config(&config, DNSMASQ_INSTALL, errbuf);
 	write_custom_list();
 
 	return true;
@@ -1934,7 +1934,7 @@ bool readFTLconf(struct config *conf, const bool rewrite)
 			{
 				writeFTLtoml(true, NULL);
 				char errbuf[ERRBUF_SIZE] = { 0 };
-				write_dnsmasq_config(conf, false, errbuf);
+				write_dnsmasq_config(conf, DNSMASQ_INSTALL, errbuf);
 				write_custom_list();
 			}
 			return true;
@@ -1967,7 +1967,7 @@ bool readFTLconf(struct config *conf, const bool rewrite)
 	// Initialize the TOML config file
 	writeFTLtoml(true, NULL);
 	char errbuf[ERRBUF_SIZE] = { 0 };
-	write_dnsmasq_config(conf, false, errbuf);
+	write_dnsmasq_config(conf, DNSMASQ_INSTALL, errbuf);
 	write_custom_list();
 
 	return false;

@@ -294,7 +294,7 @@ static const char *invalid_host_address(const struct in_addr addr, const uint32_
 	return NULL;
 }
 
-bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, bool test_config, char errbuf[ERRBUF_SIZE])
+bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, enum dnsmasq_write_mode mode, char errbuf[ERRBUF_SIZE])
 {
 	// Early config checks
 	if(conf->dhcp.active.v.b)
@@ -434,7 +434,7 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 				}
 				// Settle on a tuple that actually binds (redrawing on a collision) so
 				// dnsmasq is pointed at the one the proxy will bind; skip for validation.
-				if(!test_config)
+				if(mode == DNSMASQ_INSTALL)
 					dotdoh_tuple_ensure_bindable(enc);
 				char ip[INET_ADDRSTRLEN];
 				dotdoh_tuple_ip(enc, ip, sizeof(ip));
@@ -976,7 +976,7 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 		chown_pihole(DNSMASQ_TEMP_CONF, NULL);
 
 	log_debug(DEBUG_CONFIG, "Testing "DNSMASQ_TEMP_CONF);
-	if(test_config && !test_dnsmasq_config(errbuf))
+	if(mode != DNSMASQ_INSTALL && !test_dnsmasq_config(errbuf))
 	{
 		log_warn("New dnsmasq configuration is not valid (%s), config remains unchanged", errbuf);
 
@@ -994,6 +994,19 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 		}
 
 		return false;
+	}
+
+	// The caller only wanted to know whether the config is valid, so the
+	// file it was tested from goes away again rather than being installed
+	if(mode == DNSMASQ_TEST_ONLY)
+	{
+		if(remove(DNSMASQ_TEMP_CONF) != 0)
+		{
+			log_err("Cannot remove temporary dnsmasq config file: %s", strerror(errno));
+			return false;
+		}
+
+		return true;
 	}
 
 	// Check if the new config file is different from the old one

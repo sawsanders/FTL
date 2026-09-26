@@ -1868,6 +1868,8 @@ static bool FTL_check_blocking(const char *domainstr, queriesData *query, client
 		dns_cache->flags.allowed = false;
 		dns_cache->expires = 0;
 		dns_cache->list_id = -1;
+		dns_cache->force_reply = REPLY_UNKNOWN;
+		dns_cache->cname_strpos = 0;
 	}
 
 	// Check if the cache record we have applies to the current query
@@ -3154,8 +3156,10 @@ static void query_blocked(queriesData *query, domainsData *domain, clientsData *
 
 	if(is_blocked(new_status))
 	{
-		// Count as blocked query
-		if(domain != NULL)
+		// Count as blocked query. Only the queried domain carries the
+		// count: runGC() hands it back from query->domainID, and a
+		// CNAME hop's domain (FTL_CNAME()) would never get it back
+		if(domain != NULL && domain->id == query->domainID)
 			domain->blockedcount++;
 		if(client != NULL)
 			change_clientcount(client, 0, 1, -1, 0);

@@ -1039,6 +1039,11 @@ bool export_queries_to_disk(const bool final)
 				new_blocked = 0;
 		}
 	}
+	else
+	{
+		// Nothing to store, the linking tables below are still exported
+		okay = true;
+	}
 
 	// Export linking tables and current AUTOINCREMENT values to the disk database
 	const char *subtable_names[SUBTABLE_STMTS] = {
@@ -1662,7 +1667,8 @@ void DB_read_queries(void)
 		query->clientID = clientID;
 		query->upstreamID = upstreamID;
 		query->cacheID = -1;
-		query->id = counters->queries;
+		// No dnsmasq ID belongs to an imported query
+		query->id = -1;
 		query->response = 0;
 		query->flags.response_calculated = reply_time_avail;
 		query->dnssec = dnssec;

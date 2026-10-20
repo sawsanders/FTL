@@ -30,9 +30,11 @@
 #include "webserver/cJSON/cJSON.h"
 // enum web_theme
 #include "api/theme.h"
+// PIHOLE_INSTALL_DIR
+#include "install_paths.h"
 
-#define CONFIG_DIR "/etc/pihole"
-#define GLOBALTOMLPATH CONFIG_DIR"/pihole.toml"
+#define CONFIG_DIR PIHOLE_INSTALL_DIR
+#define GLOBALTOMLPATH CONFIG_DIR "/pihole.toml"
 
 // This static string represents an unchanged password
 #define PASSWORD_VALUE "********"
@@ -41,13 +43,13 @@
 #define VALIDATOR_ERRBUF_LEN 256
 
 // Location of the legacy (pre-v6.0) config file
-#define GLOBALCONFFILE_LEGACY "/etc/pihole/pihole-FTL.conf"
+#define GLOBALCONFFILE_LEGACY PIHOLE_INSTALL_DIR "/pihole-FTL.conf"
 
 // Migration target for the legacy (pre-v6.0) config file
-#define MIGRATION_TARGET_V6 "/etc/pihole/migration_backup_v6"
+#define MIGRATION_TARGET_V6 PIHOLE_INSTALL_DIR "/migration_backup_v6"
 
 // Location of the legacy (pre-v6.0) setupVars config file
-#define SETUPVARS_CONF "/etc/pihole/setupVars.conf"
+#define SETUPVARS_CONF PIHOLE_INSTALL_DIR "/setupVars.conf"
 
 union conf_value {
 	bool b;                                     // boolean value
@@ -110,7 +112,6 @@ enum conf_type {
 // through the API nor the CLI. For the switch that locks the configuration
 // itself: letting either of them change it would defeat the lock.
 #define FLAG_API_CLI_READ_ONLY     (1 << 6)
-#define FLAG_FTL_LOG               (1 << 7)
 // As above, but the CLI may still set it. For options that hand code to
 // something Pi-hole then runs: configuring those needs access to the host, which
 // everyone with a legitimate use for them already has, and a web session on its
@@ -143,7 +144,6 @@ struct config {
 	struct {
 		struct conf_item upstreams;
 		struct conf_item CNAMEdeepInspect;
-		struct conf_item blockESNI;
 		struct conf_item EDNS0ECS;
 		struct conf_item ignoreLocalhost;
 		struct conf_item showDNSSEC;
@@ -164,6 +164,10 @@ struct config {
 		struct conf_item port;
 		struct conf_item localise;
 		struct conf_item revServers;
+		struct conf_item upstreamCA;
+		struct conf_item doh;
+		struct conf_item dot;
+		struct conf_item doq;
 		struct {
 			struct conf_item name;
 			struct conf_item local;
@@ -376,6 +380,7 @@ struct config {
 		struct conf_item netlink;
 		struct conf_item timing;
 		struct conf_item performance;
+		struct conf_item dotdoh;
 		// all must be the last item in this struct
 		struct conf_item all;
 	} debug;
@@ -397,6 +402,9 @@ struct conf_item *get_conf_item(struct config *conf, const unsigned int n);
 bool is_secret_conf_item(const struct conf_item *conf_item) __attribute__((pure));
 struct conf_item *get_debug_item(struct config *conf, const enum debug_flag debug);
 unsigned int config_path_depth(char **paths) __attribute__ ((pure));
+void lock_config(void);
+bool trylock_config(void);
+void unlock_config(void);
 void duplicate_config(struct config *dst, struct config *src);
 void free_config(struct config *conf, const bool terminating);
 bool compare_config_item(const enum conf_type t, const union conf_value *val1, const union conf_value *val2);
@@ -406,6 +414,7 @@ bool check_paths_equal(char **paths1, char **paths2, unsigned int max_level) __a
 const char *get_conf_type_str(const enum conf_type type) __attribute__ ((const));
 void replace_config(struct config *newconf);
 void reread_config(void);
+bool reread_config_deferred(void);
 bool validate_config(struct config *conf, const bool reset, char err[VALIDATOR_ERRBUF_LEN]);
 // Restore a single config item to its compiled-in default
 void reset_config_default(struct conf_item *conf_item);

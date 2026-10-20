@@ -73,7 +73,7 @@ _Static_assert(sizeof(overTimeData) ==
 ASSERT_SHM_SIZE(struct lookup_table,     8,      8,      8);
 ASSERT_SHM_SIZE(fifologData,        565280, 557088, 557072);
 ASSERT_SHM_SIZE(ShmSettings,           152,    140,    140);
-ASSERT_SHM_SIZE(countersStruct,        356,    356,    356);
+ASSERT_SHM_SIZE(countersStruct,        360,    360,    360);
 
 /// The name of the shared memory. Use this when connecting to the shared memory.
 #define SHMEM_PATH "/dev/shm"
@@ -1260,11 +1260,14 @@ static bool realloc_shm(SharedMemory *sharedMemory, const size_t size1, const si
 	// TCP requests.
 	if(resize)
 	{
-		// Allocate shared memory object to specified size
+		// Allocate only the part we are adding, everything below the current
+		// size has already been allocated.
 		// Using f[tl]allocate() will ensure that there's actually space for
 		// this file. Otherwise we end up with a sparse file that can give
 		// SIGBUS if we run out of space while writing to it.
-		const int ret = ftlallocate(sharedMemory->fd, 0U, new_size);
+		int ret = 0;
+		if(new_size > sharedMemory->size)
+			ret = ftlallocate(sharedMemory->fd, sharedMemory->size, new_size - sharedMemory->size);
 		if(ret != 0)
 		{
 			log_crit("realloc_shm(): Failed to resize \"%s\" (%i) to %zu: %s (%i)",
@@ -1995,7 +1998,7 @@ void dump_strings(void)
 	if(str_dumpfile != NULL)
 	{
 		char timestring[TIMESTR_SIZE] = { 0 };
-		get_timestr(timestring, time(NULL), true, false);
+		get_timestr(timestring, double_time(), true, false);
 		fprintf(str_dumpfile, "String dump starting at %s\n", timestring);
 		log_info("String dump to "STRING_DUMPFILE);
 

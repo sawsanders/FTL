@@ -53,7 +53,8 @@
 // Version 1
 #define CREATE_QUERIES_TIMESTAMP_INDEX		"CREATE INDEX idx_queries_timestamp ON queries (timestamp);"
 // Version 12
-#define CREATE_QUERY_STORAGE_ID_INDEX			"CREATE UNIQUE INDEX idx_query_storage_id ON query_storage (id);"
+// No index on query_storage(id): id is INTEGER PRIMARY KEY, hence an alias for
+// the rowid, and the rowid B-tree already is that index
 #define CREATE_QUERY_STORAGE_TIMESTAMP_INDEX		"CREATE INDEX idx_query_storage_timestamp ON query_storage (timestamp);"
 #define CREATE_QUERY_STORAGE_TYPE_INDEX		"CREATE INDEX idx_query_storage_type ON query_storage (type);"
 #define CREATE_QUERY_STORAGE_STATUS_INDEX		"CREATE INDEX idx_query_storage_status ON query_storage (status);"
@@ -84,7 +85,6 @@ const char *table_creation[] = {
 	CREATE_QUERIES_VIEW,
 };
 const char *index_creation[] = {
-	CREATE_QUERY_STORAGE_ID_INDEX,
 	CREATE_QUERY_STORAGE_TIMESTAMP_INDEX,
 	CREATE_QUERY_STORAGE_TYPE_INDEX,
 	CREATE_QUERY_STORAGE_STATUS_INDEX,
@@ -108,6 +108,7 @@ sqlite3 *_get_memdb(const int line, const char *func, const char *file) __attrib
 #define get_memdb(void) _get_memdb(__LINE__, __FUNCTION__, __FILE__)
 void close_memory_database(void);
 bool import_queries_from_disk(void);
+bool import_linking_tables_from_disk(void);
 void interrupt_memdb(void);
 bool attach_database(sqlite3* db, const char **message, const char *path, const char *alias);
 bool detach_database(sqlite3* db, const char **message, const char *alias);
@@ -116,10 +117,12 @@ bool delete_old_queries_batch(sqlite3 *db, const double until, int64_t *deleted)
 void log_deleted_old_queries(const int64_t deleted, const bool complete);
 bool export_queries_to_disk(const bool final);
 bool delete_old_queries_from_db(const bool use_memdb, const double mintime);
+bool delete_exported_queries_from_memdb(const double mintime);
 bool delete_recent_queries_from_db(const double mintime);
 bool add_additional_info_column(sqlite3 *db);
 void DB_read_queries(void);
-bool queries_to_database(void);
+bool queries_to_database(const bool final);
+double get_export_horizon(void) __attribute__((pure));
 void clear_addinfo_id_cache(void);
 bool is_memdb(const sqlite3 *db) __attribute__((pure));
 bool get_memdb_size(size_t *memsize, int *queries);

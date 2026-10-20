@@ -25,7 +25,6 @@ bool validate_filepath(union conf_value *val, const char *key, char err[VALIDATO
 bool validate_urlpath_two_slash(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN]);
 bool validate_urlpath_empty(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN]);
 bool validate_filepath_empty(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN]);
-bool validate_filepath_dash(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN]);
 bool validate_totp_secret(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN]);
 bool validate_config_paths(struct config *conf, char err[VALIDATOR_ERRBUF_LEN],
                            struct conf_item **offender);
@@ -40,5 +39,6 @@ void sanitize_dns_hosts(union conf_value *val);
 bool validate_dns_domain_or_ip(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN]);
 bool validate_str_no_newline(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN]);
 bool validate_array_no_newline(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN]);
+bool validate_upstreams(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN]);
 
 #endif // CONFIG_VALIDATOR_H

@@ -169,13 +169,13 @@ class TestCORS:
 
 class TestConfigValidationAPIType:
 
-    def test_blockESNI_rejects_float(self, api_session):
+    def test_CNAMEdeepInspect_rejects_float(self, api_session):
         data = _j(api_session.patch(f"{FTL_URL}/api/config",
-                                    json={"config": {"dns": {"blockESNI": 15.5}}}, timeout=20))
+                                    json={"config": {"dns": {"CNAMEdeepInspect": 15.5}}}, timeout=20))
         assert data["error"] == {
             "key": "bad_request",
             "message": "Config item is invalid",
-            "hint": "dns.blockESNI: not of type bool",
+            "hint": "dns.CNAMEdeepInspect: not of type bool",
         }, json.dumps(data, indent=2)
 
     def test_piholePTR_rejects_invalid_option(self, api_session):
@@ -246,6 +246,17 @@ class TestEnvvarProtectedConfig:
             "message": "Config items set via environment variables cannot be changed via the API",
             "hint": "misc.nice",
         }, json.dumps(data, indent=2)
+
+
+class TestConfigFlags:
+
+    def test_write_only_flag(self, api_session):
+        """Write-only items are marked as such in the detailed config."""
+        data = _j(api_session.get(f"{FTL_URL}/api/config/webserver/api?detailed=true", timeout=20))
+        api = data["config"]["webserver"]["api"]
+        assert api["password"]["flags"]["write_only"] is True
+        assert api["totp_secret"]["flags"]["write_only"] is True
+        assert api["max_sessions"]["flags"]["write_only"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -1288,7 +1299,7 @@ class TestConfigGet:
         assert "debug" in config
         assert "database" in config
         assert config["dns"]["CNAMEdeepInspect"] is True
-        assert config["dns"]["blockESNI"] is True
+        assert config["dns"]["EDNS0ECS"] is True
 
     def test_config_element(self, api_session):
         data = _j(api_session.get(f"{FTL_URL}/api/config/dns/upstreams", timeout=5))

@@ -159,6 +159,7 @@ enum debug_flag {
 	DEBUG_NETLINK,
 	DEBUG_TIMING,
 	DEBUG_PERFORMANCE,
+	DEBUG_DOTDOH,
 	DEBUG_MAX
 } __attribute__ ((packed));
 
@@ -252,6 +253,9 @@ enum thread_types {
 	NTP_SERVER4,
 	NTP_SERVER6,
 	WEBSERVER,
+	DOTDOH,
+	DOTDOH_DOT,
+	DOTDOH_DOQ,
 	THREADS_MAX
 } __attribute__ ((packed));
 

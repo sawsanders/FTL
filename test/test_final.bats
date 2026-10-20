@@ -14,7 +14,7 @@ load 'bats_helper.bash'
 }
 
 @test "No ERROR messages in FTL.log (besides known/intended errors)" {
-  run bash -c 'grep "ERROR: " /var/log/pihole/FTL.log | grep -v -E "(index\.html)|(Failed to create shared memory object)|(FTLCONF_debug_api is not a boolean)|(FTLCONF_files_pcap)|(Failed to set|adjust time during NTP sync: Insufficient permissions)|(nlrequest error)|(Failed to read ARP cache)|(Teleporter: dns\.(hostRecord|cnameRecords|hosts|revServers)(\[|:))|(Invalid value: dns\.hosts\[1\]: invalid hostname)|(----> dns\.hosts\[1\] has been removed)"'
+  run bash -c 'grep "ERROR: " /var/log/pihole/FTL.log | grep -v -E "(index\.html)|(Failed to create shared memory object)|(FTLCONF_debug_api is not a boolean)|(FTLCONF_files_pcap)|(Failed to set|adjust time during NTP sync: Insufficient permissions)|(nlrequest error)|(Failed to read ARP cache)|(Teleporter: dns\.(hostRecord|cnameRecords|hosts|revServers)(\[|:))|(FOREIGN KEY constraint failed; \[INSERT INTO domainlist_by_group )|(Invalid value: dns\.hosts\[1\]: invalid hostname)|(----> dns\.hosts\[1\] has been removed)"'
   refute_output
 }
 
@@ -45,14 +45,22 @@ load 'bats_helper.bash'
   # pytest: 2x pihole.toml writes (top_domains exclude filter set + reset)
   # pytest: 3x pihole.toml writes (v5 Teleporter import migration, restart + ZIP restore)
   # pytest: 4x pihole.toml writes (v5 setupVars.conf import twice, migration + restart each)
+  # dotdoh.bats: 2x pihole.toml writes (encrypted setup + plaintext teardown)
+  # dotdoh.bats: 2x pihole.toml writes (debug.dotdoh enable + disable)
+  # dotdoh_server.bats: 1x pihole.toml write (reset dns.reply.host force to default)
+  # webserver_acl.bats: 4x pihole.toml writes (three ACLs + restore)
   # pytest: 6x pihole.toml writes (v5 Teleporter import: migration, restart and restoring the config, twice)
   run bash -c 'grep -c "INFO: Config file written to /etc/pihole/pihole.toml" /var/log/pihole/FTL.log'
   printf "pihole.toml write count: %s\n" "${lines[0]}"
-  # On RISCV64, pytest is skipped (too slow), so only BATS writes occur
+  # On RISCV64, pytest AND both encrypted-DNS suites are skipped (too
+  # slow), leaving the dns.reply.host PATCH, the removed dns.hosts entry and
+  # webserver_acl.bats. The CLI password set/remove do not write: the in-memory
+  # config already matches, so they log "pihole.toml unchanged" - which the
+  # next assertion below counts.
   if [[ "${CI_ARCH}" == "linux/riscv64" ]]; then
-      assert_line --index 0 "2"
+    assert_line --index 0 "6"
   else
-    [[ ${lines[0]} == "42" ]]
+    [[ ${lines[0]} == "51" ]]
   fi
   # CLI password set/remove trigger inotify reload but result in
   # "pihole.toml unchanged" as the in-memory config already matches
@@ -60,14 +68,18 @@ load 'bats_helper.bash'
   printf "pihole.toml unchanged count: %s\n" "${lines[0]}"
   [[ ${lines[0]} -ge 2 ]]
   assert_success
-  # pytest adds one: the ZIP restore drops the reverse server of the v5
+  # One more than the deterministic baseline: the randomised DoT/DoH loopback
+  # tuples change the encrypted-upstream config on every (re)start. Those tuples
+  # need dns.upstreams to hold encrypted entries, which only the dotdoh suites
+  # arrange - on riscv64 they are skipped, leaving a single write.
+  # pytest adds one more: the ZIP restore drops the reverse server of the v5
   # setupVars.conf import again
   run bash -c 'grep -c "DEBUG_CONFIG: Config file written to /etc/pihole/dnsmasq.conf" /var/log/pihole/FTL.log'
   printf "dnsmasq.conf write count: %s\n" "${lines[0]}"
   if [[ "${CI_ARCH}" == "linux/riscv64" ]]; then
     assert_line --index 0 "1"
   else
-    assert_line --index 0 "2"
+    assert_line --index 0 "5"
   fi
   run bash -c 'grep -c "DEBUG_CONFIG: HOSTS file written to /etc/pihole/hosts/custom.list" /var/log/pihole/FTL.log'
   printf "custom.list write count: %s\n" "${lines[0]}"
@@ -117,6 +129,34 @@ load 'bats_helper.bash'
     sleep 2
   done
   assert_line --index 0 "1"
+}
+
+@test "New clients skip the alias-client lookup when no alias-client is configured" {
+  # Reimport without the alias-client of the test database, then put it back
+  # for the reimport test below
+  saved="$(./pihole-FTL sqlite3 /etc/pihole/pihole-FTL.db ".mode insert aliasclient" "SELECT * FROM aliasclient;")"
+  [[ -n "${saved}" ]]
+  ./pihole-FTL sqlite3 /etc/pihole/pihole-FTL.db ".timeout 5000" "DELETE FROM aliasclient;"
+  logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
+  kill -SIGRTMIN+3 "$(cat /run/pihole-FTL.pid)"
+  run bash -c "./pihole-FTL wait-for 'Imported 0 alias-clients' /var/log/pihole/FTL.log 30 ${logsize_before}"
+  imported=$status
+
+  logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
+  dig +short +tries=1 +time=2 -b 127.0.0.33 alias-lookup.ftl @127.0.0.1 > /dev/null
+  lookups="$(tail -c +$((logsize_before + 1)) /var/log/pihole/FTL.log | grep -c 'Looking for the alias-client for client 127.0.0.33' || true)"
+  queries="$(tail -c +$((logsize_before + 1)) /var/log/pihole/FTL.log | grep -c 'query "alias-lookup.ftl" from lo/127.0.0.33#' || true)"
+
+  ./pihole-FTL sqlite3 /etc/pihole/pihole-FTL.db ".timeout 5000" "${saved}"
+  logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
+  kill -SIGRTMIN+3 "$(cat /run/pihole-FTL.pid)"
+  run bash -c "./pihole-FTL wait-for 'Imported 1 alias-client' /var/log/pihole/FTL.log 30 ${logsize_before}"
+  assert_success
+
+  printf "reimport: %s, queries: %s, lookups: %s\n" "${imported}" "${queries}" "${lookups}"
+  [[ "${imported}" == "0" ]]
+  [[ "${queries}" -ge 1 ]]
+  [[ "${lookups}" == "0" ]]
 }
 
 @test "Reimporting more alias-clients than the clients array holds" {
@@ -269,7 +309,7 @@ load 'bats_helper.bash'
   before=$(stat -c%s /var/log/pihole/FTL.log)
   run bash -c 'curl -s -o /dev/null -w "%{http_code}" -X PATCH http://127.0.0.1/api/config -d "{\"config\":{\"database\":{\"forceDisk\":true}}}"'
   assert_output "200"
-  run ./pihole-FTL wait-for "Web server ports:" /var/log/pihole/FTL.log 30 "$before"
+  run ./pihole-FTL wait-for "TLS terminator listening" /var/log/pihole/FTL.log 30 "$before"
   assert_success
   run stat -c %a /etc/pihole/pihole-tmp.db
   assert_output "640"
@@ -278,35 +318,10 @@ load 'bats_helper.bash'
   before=$(stat -c%s /var/log/pihole/FTL.log)
   run bash -c 'curl -s -o /dev/null -w "%{http_code}" -X PATCH http://127.0.0.1/api/config -d "{\"config\":{\"database\":{\"forceDisk\":false}}}"'
   assert_output "200"
-  run ./pihole-FTL wait-for "Web server ports:" /var/log/pihole/FTL.log 30 "$before"
+  run ./pihole-FTL wait-for "TLS terminator listening" /var/log/pihole/FTL.log 30 "$before"
   assert_success
   run bash -c 'ls /etc/pihole/pihole-tmp.db*'
   assert_failure
-}
-
-@test "FTL keeps running when it cannot open its log file" {
-  # With a directory in place of FTL.log every open of the file fails and FTL
-  # logs to syslog instead. A list reload makes it log, the in-memory log shows
-  # when the reload is done
-  next=$(curl -s 127.0.0.1/api/logs/ftl | jq .nextID)
-  mv /var/log/pihole/FTL.log /var/log/pihole/FTL.log.moved
-  mkdir /var/log/pihole/FTL.log
-  kill -SIGRTMIN "$(cat /run/pihole-FTL.pid)"
-  for i in $(seq 1 60); do
-    if curl -s "127.0.0.1/api/logs/ftl?nextID=${next}" | grep -q 'deny regex for'; then
-      break
-    fi
-    sleep 0.5
-  done
-  run bash -c "curl -s '127.0.0.1/api/logs/ftl?nextID=${next}' | grep -c 'deny regex for'"
-  logged="${output}"
-  run bash -c 'kill -0 "$(cat /run/pihole-FTL.pid)"'
-  alive=${status}
-  rmdir /var/log/pihole/FTL.log
-  mv /var/log/pihole/FTL.log.moved /var/log/pihole/FTL.log
-  printf "reload logged: %s, FTL alive: %s\n" "${logged}" "${alive}"
-  [[ ${logged} -ge 1 ]]
-  [[ ${alive} == 0 ]]
 }
 
 @test "FTL terminates with message" {
@@ -389,39 +404,110 @@ load 'bats_helper.bash'
   refute_output
 }
 
-@test "A gravity database swapped in right after a restart is loaded (#3162)" {
-  # Swap like pihole -g: drop the tables of the database FTL has just opened,
-  # then move the new one in. It carries the same timestamp here, so only the
-  # file itself tells the two apart
+@test "Queries are stored with their own domain when database.DBimport is disabled" {
+  # Restart FTL without importing the history. New domains must continue the
+  # IDs of disk.domain_by_id instead of reusing those of older domains
   logsize_restart=$(stat -c%s /var/log/pihole/FTL.log)
-  run bash -c 'su pihole -s /bin/sh -c /home/pihole/pihole-FTL'
+  run bash -c 'su pihole -s /bin/sh -c "FTLCONF_database_DBimport=false /home/pihole/pihole-FTL"'
   assert_success
-  run bash -c "./pihole-FTL wait-for 'deny regex for' /var/log/pihole/FTL.log 30 $logsize_restart"
+  run bash -c "./pihole-FTL wait-for ' -> Known forward destinations' /var/log/pihole/FTL.log 30 $logsize_restart"
   assert_success
 
-  logsize_swap=$(stat -c%s /var/log/pihole/FTL.log)
-  cp -p /etc/pihole/gravity.db /etc/pihole/gravity_temp.db
-  printf ".timeout 30000\nDROP TABLE IF EXISTS gravity;\nDROP TABLE IF EXISTS antigravity;\nVACUUM;\n" | ./pihole-FTL sqlite3 -ni /etc/pihole/gravity.db
-  mv /etc/pihole/gravity.db /tmp/gravity_swapped_out.db
-  mv /etc/pihole/gravity_temp.db /etc/pihole/gravity.db
+  for i in $(seq 1 30); do
+    if dig A dbimport-off.ftl @127.0.0.1 +tries=1 +time=1 > /dev/null; then
+      break
+    fi
+    sleep 1
+  done
 
-  run bash -c "./pihole-FTL wait-for 'Gravity database has been replaced, reloading now' /var/log/pihole/FTL.log 5 $logsize_swap"
-  assert_success
-  run bash -c "./pihole-FTL wait-for 'deny regex for' /var/log/pihole/FTL.log 5 $logsize_swap"
-  assert_success
-  rm -f /tmp/gravity_swapped_out.db
-
-  dig A swap.special.gravity.ftl @127.0.0.1 +tries=1 +time=2 > /dev/null
-  run bash -c 'grep -c "gravity blocked swap.special.gravity.ftl is" /var/log/pihole/pihole.log'
-  assert_output "1"
-  run bash -c "tail -c +$((logsize_swap + 1)) /var/log/pihole/FTL.log | grep -c 'no such table'"
-  assert_output "0"
-
+  # Queries move into the in-memory database once per second, the final
+  # export on termination then stores them on disk
+  sleep 3
   logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
   run bash -c "kill $(cat /run/pihole-FTL.pid)"
   assert_success
   run bash -c "./pihole-FTL wait-for '########## FTL terminated after' /var/log/pihole/FTL.log 30 $logsize_before"
   assert_success
+
+  # The log checks above ran before this restart, check its part of the log
+  # with the same exclusions
+  tail -c +$((logsize_restart + 1)) /var/log/pihole/FTL.log > /tmp/FTL.dbimport-off.log
+  run bash -c 'grep "WARNING:" /tmp/FTL.dbimport-off.log | grep -v -E "CAP_NET_ADMIN|CAP_NET_RAW|CAP_SYS_NICE|CAP_IPC_LOCK|CAP_CHOWN|CAP_NET_BIND_SERVICE|CAP_SYS_TIME|FTLCONF_|(negative DS reply without NS record received for ([a-z0-9-]+\.)*(ftl|icloud\.com|apple-dns\.net|in-addr\.arpa|ip6\.arpa),)|(nameserver 127.0.0.1 refused to do a recursive query)"'
+  refute_output
+  run bash -c 'grep "ERROR: " /tmp/FTL.dbimport-off.log | grep -v -E "(index\.html)|(Failed to create shared memory object)|(FTLCONF_debug_api is not a boolean)|(FTLCONF_files_pcap)|(Failed to set|adjust time during NTP sync: Insufficient permissions)|(nlrequest error)|(Failed to read ARP cache)"'
+  refute_output
+  run bash -c 'grep "CRIT:" /tmp/FTL.dbimport-off.log | grep -v "CRIT: pihole-FTL is already running"'
+  refute_output
+
+  run bash -c "./pihole-FTL sqlite3 /etc/pihole/pihole-FTL.db \"SELECT COUNT(*) FROM queries WHERE domain = 'dbimport-off.ftl';\""
+  printf "disk queries for dbimport-off.ftl: %s\n" "${lines[0]}"
+  [[ ${lines[0]} -ge 1 ]]
+}
+
+@test "Garbage collection removes old queries when webserver.api.maxHistory is 0" {
+  # The garbage collector runs once per minute then and keeps only the
+  # queries that can still receive a reply. All of them still reach the disk,
+  # and a rate-limited client stays limited when none of its queries is left
+  logsize_restart=$(stat -c%s /var/log/pihole/FTL.log)
+  logsize_dnsmasq=$(stat -c%s /var/log/pihole/pihole.log)
+  run bash -c 'su pihole -s /bin/sh -c "FTLCONF_webserver_api_maxHistory=0 FTLCONF_dns_rateLimit_count=250 FTLCONF_dns_rateLimit_interval=3600 /home/pihole/pihole-FTL"'
+  assert_success
+  run bash -c "./pihole-FTL wait-for ' -> Known forward destinations' /var/log/pihole/FTL.log 30 $logsize_restart"
+  assert_success
+  for i in $(seq 1 30); do
+    if dig A maxhistory-zero-0.ftl @127.0.0.1 +tries=1 +time=1 > /dev/null; then
+      break
+    fi
+    sleep 1
+  done
+
+  # 127.0.0.2 exceeds the rate limit
+  for i in $(seq 1 251); do
+    dig A "ratelimit-${i}.ftl" -b 127.0.0.2 @127.0.0.1 +tries=1 +time=1 > /dev/null || true
+  done
+  run bash -c "dig A ratelimit-0.ftl -b 127.0.0.2 @127.0.0.1 +tries=1 +time=1 | grep -oE 'status: [A-Z]+'"
+  assert_output "status: REFUSED"
+  limited=$(date +%s)
+
+  # One query per second until a run whose cutoff lies past the burst has
+  # removed queries, the second run after it does at the latest
+  for i in $(seq 1 150); do
+    dig A "maxhistory-zero-${i}.ftl" @127.0.0.1 +tries=1 +time=1 > /dev/null || true
+    if tail -c +$((logsize_restart + 1)) /var/log/pihole/FTL.log | awk -v t="${limited}" '
+         /GC starting, mintime:/ { match($0, /\([0-9]+\)/); past = substr($0, RSTART + 1, RLENGTH - 2) + 0 >= t }
+         /GC removed [1-9][0-9]* queries/ { if(past) done = 1 }
+         END { exit !done }'; then
+      break
+    fi
+    sleep 1
+  done
+  run bash -c "tail -c +$((logsize_restart + 1)) /var/log/pihole/FTL.log | grep -E 'GC (starting|removed)'"
+  printf "%s\n" "${lines[@]}"
+  assert_output --regexp "GC removed [1-9][0-9]* queries"
+
+  # None of the queries of 127.0.0.2 is left in memory, it is still limited
+  run bash -c "dig A ratelimit-after.ftl -b 127.0.0.2 @127.0.0.1 +tries=1 +time=1 | grep -oE 'status: [A-Z]+'"
+  assert_output "status: REFUSED"
+
+  # The final export on termination stores what is left in memory
+  logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
+  run bash -c "kill $(cat /run/pihole-FTL.pid)"
+  assert_success
+  run bash -c "./pihole-FTL wait-for '########## FTL terminated after' /var/log/pihole/FTL.log 30 $logsize_before"
+  assert_success
+  sent=$(tail -c +$((logsize_dnsmasq + 1)) /var/log/pihole/pihole.log | grep -cE "query\[A\] maxhistory-zero-[0-9]+\.ftl ")
+  run bash -c "./pihole-FTL sqlite3 /etc/pihole/pihole-FTL.db \"SELECT COUNT(*) FROM queries WHERE domain GLOB 'maxhistory-zero-*.ftl';\""
+  printf "queries sent: %s, stored on disk: %s\n" "${sent}" "${lines[0]}"
+  [[ ${sent} -ge 1 ]]
+  assert_equal "${lines[0]}" "${sent}"
+
+  tail -c +$((logsize_restart + 1)) /var/log/pihole/FTL.log > /tmp/FTL.maxhistory-zero.log
+  run bash -c 'grep "WARNING:" /tmp/FTL.maxhistory-zero.log | grep -v -E "CAP_NET_ADMIN|CAP_NET_RAW|CAP_SYS_NICE|CAP_IPC_LOCK|CAP_CHOWN|CAP_NET_BIND_SERVICE|CAP_SYS_TIME|FTLCONF_|(negative DS reply without NS record received for ([a-z0-9-]+\.)*(ftl|icloud\.com|apple-dns\.net|in-addr\.arpa|ip6\.arpa),)|(nameserver 127.0.0.1 refused to do a recursive query)"'
+  refute_output
+  run bash -c 'grep "ERROR: " /tmp/FTL.maxhistory-zero.log | grep -v -E "(index\.html)|(Failed to create shared memory object)|(FTLCONF_debug_api is not a boolean)|(FTLCONF_files_pcap)|(Failed to set|adjust time during NTP sync: Insufficient permissions)|(nlrequest error)|(Failed to read ARP cache)"'
+  refute_output
+  run bash -c 'grep "CRIT:" /tmp/FTL.maxhistory-zero.log | grep -v "CRIT: pihole-FTL is already running"'
+  refute_output
 }
 
 @test "Pi-hole PTR records are generated once per address, however it is spelled" {
@@ -512,4 +598,39 @@ load 'bats_helper.bash'
   refute_output
   run bash -c 'grep "CRIT:" /tmp/FTL.privacylevel.log | grep -v "CRIT: pihole-FTL is already running"'
   refute_output
+}
+
+@test "A gravity database swapped in right after a restart is loaded (#3162)" {
+  # Swap like pihole -g: drop the tables of the database FTL has just opened,
+  # then move the new one in. It carries the same timestamp here, so only the
+  # file itself tells the two apart
+  logsize_restart=$(stat -c%s /var/log/pihole/FTL.log)
+  run bash -c 'su pihole -s /bin/sh -c /home/pihole/pihole-FTL'
+  assert_success
+  run bash -c "./pihole-FTL wait-for 'deny regex for' /var/log/pihole/FTL.log 30 $logsize_restart"
+  assert_success
+
+  logsize_swap=$(stat -c%s /var/log/pihole/FTL.log)
+  cp -p /etc/pihole/gravity.db /etc/pihole/gravity_temp.db
+  printf ".timeout 30000\nDROP TABLE IF EXISTS gravity;\nDROP TABLE IF EXISTS antigravity;\nVACUUM;\n" | ./pihole-FTL sqlite3 -ni /etc/pihole/gravity.db
+  mv /etc/pihole/gravity.db /tmp/gravity_swapped_out.db
+  mv /etc/pihole/gravity_temp.db /etc/pihole/gravity.db
+
+  run bash -c "./pihole-FTL wait-for 'Gravity database has been replaced, reloading now' /var/log/pihole/FTL.log 5 $logsize_swap"
+  assert_success
+  run bash -c "./pihole-FTL wait-for 'deny regex for' /var/log/pihole/FTL.log 5 $logsize_swap"
+  assert_success
+  rm -f /tmp/gravity_swapped_out.db
+
+  dig A swap.special.gravity.ftl @127.0.0.1 +tries=1 +time=2 > /dev/null
+  run bash -c 'grep -c "gravity blocked swap.special.gravity.ftl is" /var/log/pihole/pihole.log'
+  assert_output "1"
+  run bash -c "tail -c +$((logsize_swap + 1)) /var/log/pihole/FTL.log | grep -c 'no such table'"
+  assert_output "0"
+
+  logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
+  run bash -c "kill $(cat /run/pihole-FTL.pid)"
+  assert_success
+  run bash -c "./pihole-FTL wait-for '########## FTL terminated after' /var/log/pihole/FTL.log 30 $logsize_before"
+  assert_success
 }

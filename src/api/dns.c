@@ -89,7 +89,7 @@ static int set_blocking(struct ftl_conn *api)
 		// Restart the timer (-1 disables all running timers)
 		set_blockingmode_timer(time, !target_status);
 
-		log_debug(DEBUG_API, "No change in blocking mode, resetting timer");
+		log_web_debug(DEBUG_API, "No change in blocking mode, resetting timer");
 	}
 	else
 	{
@@ -99,7 +99,7 @@ static int set_blocking(struct ftl_conn *api)
 		// Start timer (-1 disables all running timers)
 		set_blockingmode_timer(time, !target_status);
 
-		log_debug(DEBUG_API, "%sd Pi-hole, timer set to %f seconds", target_status ? "Enable" : "Disable", time);
+		log_web_debug(DEBUG_API, "%sd Pi-hole, timer set to %f seconds", target_status ? "Enable" : "Disable", time);
 	}
 
 	// Return GET property as result of POST/PUT/PATCH action
@@ -118,9 +118,11 @@ int api_dns_blocking(struct ftl_conn *api)
 	}
 	else if(api->method == HTTP_POST)
 	{
+		lock_config();
 		lock_shm();
 		const int ret = set_blocking(api);
 		unlock_shm();
+		unlock_config();
 		return ret;
 	}
 	else

@@ -9,6 +9,8 @@
 *  Please see LICENSE file for your rights under this license. */
 
 #include "FTL.h"
+// open(), O_* flags for the atomic 0600 config-file creation
+#include <fcntl.h>
 #include "dnsmasq_config.h"
 // logging routines
 #include "log.h"
@@ -18,6 +20,9 @@
 #include "config/config.h"
 // JSON array functions
 #include "webserver/cJSON/cJSON.h"
+// encrypted upstreams: parse_upstream_uri() + the deterministic loopback tuple
+#include "dotdoh/upstream_uri.h"
+#include "dotdoh/registry.h"
 // directory_exists()
 #include "files.h"
 // trim_whitespace()
@@ -262,12 +267,12 @@ static void write_config_header(FILE *fp, const char *description)
 	CONFIG_CENTER(fp, HEADER_WIDTH, "%s", "ANY CHANGES MADE TO THIS FILE WILL BE LOST WHEN THE CONFIGURATION CHANGES");
 	CONFIG_CENTER(fp, HEADER_WIDTH, "%s", "");
 	CONFIG_CENTER(fp, HEADER_WIDTH, "%s", "IF YOU WISH TO CHANGE ANY OF THESE VALUES, CHANGE THEM IN");
-	CONFIG_CENTER(fp, HEADER_WIDTH, "%s", "/etc/pihole/pihole.toml");
+	CONFIG_CENTER(fp, HEADER_WIDTH, "%s", GLOBALTOMLPATH);
 	CONFIG_CENTER(fp, HEADER_WIDTH, "%s", "and restart pihole-FTL");
 	CONFIG_CENTER(fp, HEADER_WIDTH, "%s", "");
 	CONFIG_CENTER(fp, HEADER_WIDTH, "%s", "ANY OTHER CHANGES SHOULD BE MADE IN A SEPARATE CONFIG FILE");
 	CONFIG_CENTER(fp, HEADER_WIDTH, "%s", "WITHIN /etc/dnsmasq.d/yourname.conf");
-	CONFIG_CENTER(fp, HEADER_WIDTH, "%s", "(make sure misc.etc_dnsmasq_d is set to true in /etc/pihole/pihole.toml)");
+	CONFIG_CENTER(fp, HEADER_WIDTH, "(make sure misc.etc_dnsmasq_d is set to true in %s)", GLOBALTOMLPATH);
 	CONFIG_CENTER(fp, HEADER_WIDTH, "%s", "");
 	CONFIG_CENTER(fp, HEADER_WIDTH, "Last updated: %s", timestring);
 	CONFIG_CENTER(fp, HEADER_WIDTH, "by FTL version %s", get_FTL_version());
@@ -304,21 +309,6 @@ static const char *invalid_host_address(const struct in_addr addr, const uint32_
 	if(host == (~netmask & 0xFFFFFFFFu))
 		return "the broadcast address of the subnet";
 	return NULL;
-}
-
-// Write a key="value" line for a file path. Quoted and escaped: unquoted, '#'
-// after a space starts a comment, and '"' and '\' are special to dnsmasq's
-// parser, which removes the quotes and the escapes again
-static void write_quoted_path(FILE *fp, const char *key, const char *path)
-{
-	fprintf(fp, "%s=\"", key);
-	for(const char *p = path; *p != '\0'; p++)
-	{
-		if(*p == '"' || *p == '\\')
-			fputc('\\', fp);
-		fputc(*p, fp);
-	}
-	fputs("\"\n", fp);
 }
 
 bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, enum dnsmasq_write_mode mode, char errbuf[ERRBUF_SIZE])
@@ -403,12 +393,19 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, enu
 	}
 
 	log_debug(DEBUG_CONFIG, "Opening "DNSMASQ_TEMP_CONF" for writing");
-	FILE *pihole_conf = fopen(DNSMASQ_TEMP_CONF, "w");
+	// Create it 0600 and atomically: it carries the randomised loopback tuples, and
+	// open(O_EXCL|O_NOFOLLOW) avoids the world-readable window fopen()+fchmod() would
+	// leave. The rename below preserves the mode; chown_pihole() sets the owner.
+	unlink(DNSMASQ_TEMP_CONF);
+	const int conf_fd = open(DNSMASQ_TEMP_CONF, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+	FILE *pihole_conf = conf_fd >= 0 ? fdopen(conf_fd, "w") : NULL;
 	// Return early if opening failed
 	if(!pihole_conf)
 	{
 		snprintf(errbuf, ERRBUF_SIZE, "Cannot open "DNSMASQ_TEMP_CONF" for writing: %s", strerror(errno));
 		log_err("%s, unable to update dnsmasq configuration", errbuf);
+		if(conf_fd >= 0)
+			close(conf_fd);
 		return false;
 	}
 
@@ -427,10 +424,42 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, enu
 	if(cJSON_GetArraySize(conf->dns.upstreams.v.json) > 0)
 	{
 		fputs("# List of upstream DNS server\n", pihole_conf);
+
+		// Encrypted upstreams are not handed to dnsmasq directly: it forwards their
+		// plaintext to a loopback tuple the DoT/DoH proxy binds later, from the same
+		// per-process table (so the two agree). No fail-closed check is needed here -
+		// FTL_is_forward_available() skips any tuple the proxy does not actually own.
+		int enc = 0;
 		cJSON *server = NULL;
 		cJSON_ArrayForEach(server, conf->dns.upstreams.v.json)
 		{
-			if(server != NULL && cJSON_IsString(server))
+			if(server == NULL || !cJSON_IsString(server) || server->valuestring == NULL)
+				continue;
+
+			struct upstream_uri u;
+			const bool encrypted = parse_upstream_uri(server->valuestring, &u) && u.type != UST_PLAIN;
+			if(encrypted)
+			{
+				// The proxy binds at most DOTDOH_MAX_UPSTREAMS loopback tuples
+				// (proxy.c walks the same list with the same index). Never point
+				// dnsmasq at a tuple beyond that range - it would be bound by
+				// nothing and only add failover delay.
+				if(enc >= DOTDOH_MAX_UPSTREAMS)
+				{
+					log_warn("Ignoring encrypted upstream '%s': at most %d are supported",
+					         server->valuestring, DOTDOH_MAX_UPSTREAMS);
+					continue;
+				}
+				// Settle on a tuple that actually binds (redrawing on a collision) so
+				// dnsmasq is pointed at the one the proxy will bind; skip for validation.
+				if(mode == DNSMASQ_INSTALL)
+					dotdoh_tuple_ensure_bindable(enc);
+				char ip[INET_ADDRSTRLEN];
+				dotdoh_tuple_ip(enc, ip, sizeof(ip));
+				fprintf(pihole_conf, "server=%s#%d\n", ip, dotdoh_tuple_port(enc));
+				enc++;
+			}
+			else
 				fprintf(pihole_conf, "server=%s\n", server->valuestring);
 		}
 		fputs("\n", pihole_conf);
@@ -455,27 +484,18 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, enu
 	if(conf->dns.queryLogging.v.b)
 	{
 		fputs("# Enable query logging\n", pihole_conf);
+		// FTL writes pihole.log synchronously via a cached descriptor, so
+		// dnsmasq's log-async queue is never used
 		if(conf->misc.extraLogging.v.b)
 			fputs("log-queries=proto\n", pihole_conf);
 		else
 			fputs("log-queries\n", pihole_conf);
-		fputs("log-async\n", pihole_conf);
 		fputs("\n", pihole_conf);
 	}
 	else
 	{
 		fputs("# Disable query logging\n", pihole_conf);
 		fputs("#log-queries\n", pihole_conf);
-		fputs("#log-async\n", pihole_conf);
-		fputs("\n", pihole_conf);
-	}
-
-	if(strlen(conf->files.log.dnsmasq.v.s) > 0)
-	{
-		fputs("# Specify the log file to use\n", pihole_conf);
-		fputs("# We set this even if logging is disabled to store warnings\n", pihole_conf);
-		fputs("# and errors in this file. This is useful for debugging.\n", pihole_conf);
-		write_quoted_path(pihole_conf, "log-facility", conf->files.log.dnsmasq.v.s);
 		fputs("\n", pihole_conf);
 	}
 
@@ -911,7 +931,16 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, enu
 		{
 			fputs("# PCAP network traffic recording\n", pihole_conf);
 			fprintf(pihole_conf, "dumpmask=0xFFFF\n");
-			write_quoted_path(pihole_conf, "dumpfile", conf->files.pcap.v.s);
+			// Quoted and escaped: unquoted, '#' after a space starts a
+			// comment, and '"' and '\' are special to dnsmasq's parser
+			fputs("dumpfile=\"", pihole_conf);
+			for(const char *p = conf->files.pcap.v.s; *p != '\0'; p++)
+			{
+				if(*p == '"' || *p == '\\')
+					fputc('\\', pihole_conf);
+				fputc(*p, pihole_conf);
+			}
+			fputs("\"\n", pihole_conf);
 			fputs("\n", pihole_conf);
 		}
 		else
@@ -1042,6 +1071,10 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, enu
 	else
 	{
 		log_debug(DEBUG_CONFIG, "dnsmasq.conf unchanged");
+		// Unchanged content keeps the existing file; tighten its mode too, in case an
+		// older FTL left it world-readable (the changed path creates it 0600 itself).
+		if(chmod(DNSMASQ_PH_CONFIG, S_IRUSR | S_IWUSR) != 0)
+			log_warn("Unable to restrict permissions on "DNSMASQ_PH_CONFIG": %s", strerror(errno));
 		// Remove temporary config file
 		if(remove(DNSMASQ_TEMP_CONF) != 0)
 		{

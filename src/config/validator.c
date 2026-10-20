@@ -14,6 +14,8 @@
 #include "tools/gravity-parseList.h"
 // regex
 #include "regex_r.h"
+// parse_upstream_uri()
+#include "dotdoh/upstream_uri.h"
 // PATH_MAX
 #include <limits.h>
 
@@ -400,18 +402,6 @@ bool validate_filepath_empty(union conf_value *val, const char *key, char err[VA
 	return validate_filepath(val, key, err);
 }
 
-// Validate file path (dash or empty allowed), used by files.log.dnsmasq
-bool validate_filepath_dash(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN])
-{
-	// Dash is allowed, this enabled printing to stderr
-	if(strlen(val->s) == 1 && val->s[0] == '-')
-		return true;
-
-	// else: an empty value leaves the log-facility line out of the dnsmasq
-	// config, dnsmasq then logs to syslog
-	return validate_filepath_empty(val, key, err);
-}
-
 // Validate the TOTP secret: empty (2FA off) or a base32 string of at most 32
 // characters (the 20 byte secret), which is what verifyTOTP() can decode
 bool validate_totp_secret(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN])
@@ -624,10 +614,6 @@ bool validate_config_paths(struct config *conf, char err[VALIDATOR_ERRBUF_LEN],
 	{
 		const char *path = written[i]->v.s;
 		if(path == NULL || path[0] == '\0')
-			continue;
-
-		// "-" makes dnsmasq log to stderr, it names no file
-		if(written[i] == &conf->files.log.dnsmasq && strcmp(path, "-") == 0)
 			continue;
 
 		// A relative path is resolved from the working directory and cannot
@@ -994,6 +980,14 @@ bool validate_ui_min_7_or_0(union conf_value *val, const char *key, char err[VAL
 		return false;
 	}
 
+	// The value is a day count handed to OpenSSL as an int, keep it within
+	// a range that stays meaningful as a certificate lifetime (100 years)
+	if(val->ui > 36500)
+	{
+		snprintf(err, VALIDATOR_ERRBUF_LEN, "%s: cannot be larger than 36500", key);
+		return false;
+	}
+
 	return true;
 }
 
@@ -1171,6 +1165,45 @@ bool validate_str_no_newline(union conf_value *val, const char *key, char err[VA
 		{
 			snprintf(err, VALIDATOR_ERRBUF_LEN, "%s: contains newline characters", key);
 			return false;
+		}
+	}
+
+	return true;
+}
+
+// Validator for dns.upstreams. Enforces the same array/string/newline rules as
+// validate_array_no_newline() and, in addition, requires every encrypted entry
+// (tls://, https://, h3://, doq:// or quic://) to parse as a valid encrypted-
+// upstream URI. Plaintext entries are left untouched - dnsmasq validates those
+// itself.
+bool validate_upstreams(union conf_value *val, const char *key, char err[VALIDATOR_ERRBUF_LEN])
+{
+	if(!validate_array_no_newline(val, key, err))
+		return false;
+
+	int i = 0;
+	for(cJSON *item = val->json != NULL ? val->json->child : NULL; item != NULL; item = item->next, i++)
+	{
+		const char *s = item->valuestring;
+		if(s == NULL)
+			continue;
+
+		// Anything carrying a URI scheme ("://") must be a supported encrypted
+		// upstream (tls://, https://, h3://, doq:// or quic://) that parses
+		// cleanly. A plaintext server specification handled downstream by
+		// dnsmasq never contains "://", so an entry that does but is not a valid
+		// encrypted URI (e.g. http://, ftp:// or a malformed tls://) is rejected
+		// here rather than being written into dnsmasq.conf and breaking DNS
+		// startup.
+		if(strstr(s, "://") != NULL)
+		{
+			struct upstream_uri u;
+			if(!parse_upstream_uri(s, &u) || u.type == UST_PLAIN)
+			{
+				snprintf(err, VALIDATOR_ERRBUF_LEN,
+				         "%s[%d]: invalid encrypted upstream URI", key, i);
+				return false;
+			}
 		}
 	}
 

@@ -451,6 +451,14 @@ void initConfig(struct config *conf)
 	conf->dns.upstreams.f = FLAG_RESTART_FTL;
 	conf->dns.upstreams.c = validate_upstreams;
 
+	conf->dns.fastRetry.k = "dns.fastRetry";
+	conf->dns.fastRetry.h = "Retransmission interval (in milliseconds) for unanswered upstream queries. This is disabled by default (0).\n\n Pi-hole forwards a query and then waits for the reply. If either the query or the reply is lost on the way, nothing happens until the client gives up and asks again. Repetitions of a query that is still in flight are attached to the running query instead of being forwarded again, so a client cannot recover such a loss on its own either - only Pi-hole can, by asking upstream once more.\n\n When enabled, the first retransmission is sent after the configured number of milliseconds, the interval doubles for every further attempt, and retransmissions stop as soon as the query is answered or has timed out. Note that DNSSEC validation enables retransmission independently of this setting because an unanswered query would otherwise stall the whole validation chain.";
+	conf->dns.fastRetry.a = cJSON_CreateStringReference("0 to disable retransmission, or an integer value between 50 and 10000 (milliseconds)");
+	conf->dns.fastRetry.t = CONF_UINT;
+	conf->dns.fastRetry.f = FLAG_RESTART_FTL;
+	conf->dns.fastRetry.d.ui = 0u;
+	conf->dns.fastRetry.c = validate_dns_fastRetry;
+
 	conf->dns.CNAMEdeepInspect.k = "dns.CNAMEdeepInspect";
 	conf->dns.CNAMEdeepInspect.h = "Use this option to control deep CNAME inspection. Disabling it might be beneficial for very low-end devices";
 	conf->dns.CNAMEdeepInspect.t = CONF_BOOL;
@@ -1952,16 +1960,22 @@ bool validate_config(struct config *conf, const bool reset, char err[VALIDATOR_E
 
 
 /**
- * @brief Determine and set default webserver ports if not imported from setupVars.conf.
+ * @brief Determine and set default webserver ports if neither imported from
+ * setupVars.conf nor set by an environment variable.
  *
  * @param conf Pointer to the configuration structure.
  */
 static void get_web_port(struct config *conf)
 {
 	// Determine default webserver ports if not imported from setupVars.conf
-	if(config.webserver.port.f & FLAG_CONF_IMPORTED)
+	if(conf->webserver.port.f & FLAG_CONF_IMPORTED)
 	{
 		log_info("Webserver ports already imported from legacy config files, skipping default port detection");
+		return;
+	}
+	if(conf->webserver.port.f & FLAG_ENV_VAR)
+	{
+		log_info("Webserver ports set by environment variable, skipping default port detection");
 		return;
 	}
 
@@ -2108,17 +2122,20 @@ bool readFTLconf(struct config *conf, const bool rewrite)
 	if(file_exists(GLOBALTOMLPATH))
 	{
 		const char new_name[] = GLOBALTOMLPATH ".broken";
+		log_warn("%s could not be read or parsed, moving it to %s", GLOBALTOMLPATH, new_name);
 		rotate_files(new_name, NULL);
 		rename(GLOBALTOMLPATH, new_name);
 	}
 
-	// Determine and set default webserver ports if not imported from
-	// setupVars.conf
+	// Environment variables override the defaults as they override the
+	// values of a config file
+	applyEnvVars(conf);
+
+	// Determine and set default webserver ports if neither imported from
+	// setupVars.conf nor set by an environment variable
 	get_web_port(&config);
 
-	// Environment variables override these defaults as they override the
-	// values of a config file, and the result is held to the same rules
-	applyEnvVars(conf);
+	// Hold the result to the rules of a config file
 	validate_config(conf, true, NULL);
 
 	// Open webserver.log and pihole.log now that their paths are known

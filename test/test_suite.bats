@@ -800,6 +800,16 @@ setup() {
   assert_output --partial "--- end of backtrace"
 }
 
+@test "A crashed thread cannot keep FTL from exiting" {
+  # The thread crashes holding a stdio lock exit() waits for, the crash
+  # watchdog ends the process after 40 seconds without progress
+  run bash -c 'timeout -k 5 60 ./pihole-FTL crash-thread'
+  printf "%s\n" "${lines[@]}"
+  assert_output --partial "FTL crashed"
+  assert_output --partial "FTL did not shut down after the crash, exiting now"
+  assert_failure 1
+}
+
 @test "'pihole-FTL backtrace' resolves source locations when addr2line is present" {
   if ! command -v addr2line >/dev/null 2>&1; then
     skip "addr2line not installed; resolution-dependent assertion skipped"
@@ -1928,6 +1938,34 @@ except socket.timeout:
   assert_line --index 0 'Invalid value: dns.hosts[2]: entry does not have at least one hostname ("1.2.3.4")'
   assert_failure 3
 
+  run bash -c './pihole-FTL --config dns.cnameRecords "[\"al!as.example,target.example\"]"'
+  assert_line --index 0 'Invalid value: dns.cnameRecords[0]: invalid domain ("al!as.example")'
+  assert_failure 3
+
+  run bash -c './pihole-FTL --config dns.cnameRecords "[\"alias.example,target example\"]"'
+  assert_line --index 0 'Invalid value: dns.cnameRecords[0]: invalid domain ("target example")'
+  assert_failure 3
+
+  run bash -c './pihole-FTL --config dns.cnameRecords "[\"alias.example,target.example,300\",\"alias2.example,ta*rget.example\"]"'
+  assert_line --index 0 'Invalid value: dns.cnameRecords[1]: invalid domain ("ta*rget.example")'
+  assert_failure 3
+
+  run bash -c './pihole-FTL --config dns.cnameRecords "[\"alias.example,target.example,9999999999999999999999999999999999999\"]"'
+  assert_line --index 0 'Invalid value: dns.cnameRecords[0]: invalid TTL ("9999999999999999999999999999999999999")'
+  assert_failure 3
+
+  # Spaces around the elements are fine, check with -t to leave the config alone
+  run bash -c './pihole-FTL --config -t dns.cnameRecords "[\" alias.example , target.example , 300 \"]"'
+  assert_success
+
+  # Tabs and a trailing comment are fine as well, dnsmasq reads them the same way
+  run bash -c './pihole-FTL --config -t dns.cnameRecords "[\"tab.example,\\ttarget.example\", \"comment.example,target.example #note\"]"'
+  assert_success
+
+  # Whitespace in front of a comma must not end up as a CNAME for the root name
+  run bash -c './pihole-FTL --config -t dns.cnameRecords "[\"a.example ,target.example\", \"b.example ,target.example\"]"'
+  assert_success
+
   # No dot follows the last label, but its length is capped just the same
   long_label="$(printf 'a%.0s' {1..64})"
   run bash -c "./pihole-FTL --config dns.hosts '[\"1.2.3.4 test.${long_label}\"]'"
@@ -2034,6 +2072,35 @@ except socket.timeout:
   run bash -c './pihole-FTL --config -t webserver.tls.cert /var/www/html/tls.pem'
   assert_line --index 0 'Invalid value: webserver.tls.cert ("/var/www/html/tls.pem") must not be inside webserver.paths.webroot ("/var/www/html")'
   assert_failure 3
+}
+
+@test "Config validation: --config -t does not require write permission" {
+  # Invalid values are rejected, even as nobody in read-only mode
+  run su nobody -s /bin/sh -c \
+    'FTLCONF_misc_readOnly=true ./pihole-FTL --config -t ntp.sync.count 0'
+  assert_line --partial 'Invalid value: ntp.sync.count: cannot be lower than 1'
+  assert_failure 3
+
+  # Valid values can be tested without write permission
+  run su nobody -s /bin/sh -c \
+    './pihole-FTL --config -t ntp.sync.count 42'
+  assert_equal "${lines[-1]}" '42'
+  assert_success
+
+  # Applying changes still requires permission
+  run su nobody -s /bin/sh -c \
+    './pihole-FTL --config ntp.sync.count 42'
+  assert_line --partial "Permission error: User nobody is not allowed to edit Pi-hole's config"
+  assert_failure
+
+  # Read-only mode prevents changes
+  run env FTLCONF_misc_readOnly=true ./pihole-FTL --config ntp.sync.count 42
+  assert_line --partial 'Config is in read-only mode, changes are not allowed (misc.readOnly = true)'
+  assert_failure
+
+  # No changes were applied
+  run ./pihole-FTL --config ntp.sync.count
+  assert_line --index 0 '8'
 }
 
 @test "Config validation: a document root that resolves to the root is rejected" {

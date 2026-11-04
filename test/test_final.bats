@@ -371,6 +371,24 @@ for s in socks:
   assert_success
 }
 
+@test "A recycled client leaves the summary's client total" {
+  dig +short +tries=1 +time=2 -b 127.0.0.57 recycled-total.ftl @127.0.0.1 > /dev/null
+  before="$(curl -s 127.0.0.1/api/stats/summary | jq .clients.total)"
+  # A flush removes the queries in memory, so the GC recycles the clients
+  # without queries, 127.0.0.57 among them. It keeps the queries of the
+  # current second, which would keep their clients
+  sleep 2
+  run bash -c 'curl -s -X POST 127.0.0.1/api/action/flush/logs | jq -r .status'
+  assert_output "success"
+  flushed="$(curl -s 127.0.0.1/api/stats/summary | jq .clients.total)"
+  dig +short +tries=1 +time=2 -b 127.0.0.57 recycled-total.ftl @127.0.0.1 > /dev/null
+  after="$(curl -s 127.0.0.1/api/stats/summary | jq .clients.total)"
+  printf "clients.total: before %s, after the flush %s, after a new query %s\n" "${before}" "${flushed}" "${after}"
+  [[ ${flushed} -lt ${before} ]]
+  # The client counts once more
+  [[ ${after} -eq $((flushed + 1)) ]]
+}
+
 @test "Clients in recycled slots do not make the clients array longer" {
   # The regex reload logs the length of the clients array. 50 clients, a
   # flush that recycles all clients, 50 other clients: the second 50 reuse
@@ -515,6 +533,26 @@ for s in socks:
   run bash -c 'tr "\000" "|" < /tmp/gravity_first.out'
   assert_output --partial "before|after"
   assert_output --partial "Gravity failed"
+}
+
+@test "The gravity action does not hand FTL's sockets to the command" {
+  # Stand-in for pihole -g that lists what its file descriptors point at. Those
+  # of FTL's helper process waiting for it cannot be read here: FTL has file
+  # capabilities, which keeps the pihole user out of the helper's /proc entry
+  if [ -e /usr/local/bin/pihole ]; then
+    mv /usr/local/bin/pihole /usr/local/bin/pihole.test-backup
+  fi
+  printf '#!/bin/sh\nfor fd in /proc/$$/fd/*; do echo "${fd##*/} $(readlink "$fd")"; done\n' > /usr/local/bin/pihole
+  chmod +x /usr/local/bin/pihole
+  run bash -c 'curl -s -X POST 127.0.0.1/api/action/gravity'
+  rm -f /usr/local/bin/pihole
+  if [ -e /usr/local/bin/pihole.test-backup ]; then
+    mv /usr/local/bin/pihole.test-backup /usr/local/bin/pihole
+  fi
+  printf "%s\n" "${output}"
+  assert_line --regexp '^1 pipe:'
+  refute_output --partial "socket:"
+  refute_output --partial "inotify"
 }
 
 @test "FTL terminates with message" {
@@ -1080,6 +1118,31 @@ three.rename.ftl|new-rename.ftl"
   assert_output "1"
   run bash -c "tail -c +$((logsize_swap + 1)) /var/log/pihole/FTL.log | grep -c 'no such table'"
   assert_output "0"
+
+  logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
+  run bash -c "kill $(cat /run/pihole-FTL.pid)"
+  assert_success
+  run bash -c "./pihole-FTL wait-for '########## FTL terminated after' /var/log/pihole/FTL.log 30 $logsize_before"
+  assert_success
+}
+
+@test "A gravity database whose timestamp changes in place is reloaded each time" {
+  # The update keeps the size of the file, only its modification time tells
+  # FTL to read the timestamp again
+  logsize_restart=$(stat -c%s /var/log/pihole/FTL.log)
+  run bash -c 'su pihole -s /bin/sh -c /home/pihole/pihole-FTL'
+  assert_success
+  run bash -c "./pihole-FTL wait-for 'deny regex for' /var/log/pihole/FTL.log 30 $logsize_restart"
+  assert_success
+
+  for round in 1 2; do
+    size_before=$(stat -c%s /etc/pihole/gravity.db)
+    logsize_update=$(stat -c%s /var/log/pihole/FTL.log)
+    printf ".timeout 30000\nUPDATE info SET value = CAST(value AS INTEGER) + 1 WHERE property = 'updated';\n" | ./pihole-FTL sqlite3 -ni /etc/pihole/gravity.db
+    assert_equal "$(stat -c%s /etc/pihole/gravity.db)" "${size_before}"
+    run bash -c "./pihole-FTL wait-for 'Gravity database has been updated, reloading now' /var/log/pihole/FTL.log 5 $logsize_update"
+    assert_success
+  done
 
   logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
   run bash -c "kill $(cat /run/pihole-FTL.pid)"
